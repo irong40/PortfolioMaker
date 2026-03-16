@@ -11,6 +11,7 @@ Usage:
 
 import os
 import sys
+import queue
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -367,7 +368,6 @@ class PortfolioMakerApp:
     def _update_progress(self, current, total):
         pct = (current / total * 100) if total > 0 else 0
         self.progress_var.set(pct)
-        self.root.update_idletasks()
 
     def _update_badges(self, result):
         self.badge_total.set(result.total)
@@ -375,43 +375,75 @@ class PortfolioMakerApp:
         self.badge_oblique.set(result.oblique_count)
         self.badge_platform.set((result.platform or "?").upper())
 
+    # ── Queue-based thread communication ──
+    # Tkinter is not thread-safe. We use a queue to pass messages from
+    # worker threads to the main thread, polled every 100ms.
+
+    def _start_polling(self, msg_queue, on_done_callback):
+        """Poll the message queue from the main thread."""
+        try:
+            while True:
+                msg = msg_queue.get_nowait()
+                kind = msg[0]
+                if kind == "progress":
+                    _, current, total = msg
+                    self._update_progress(current, total)
+                    self.status_var.set(f"Reading metadata: {current}/{total}")
+                elif kind == "sort_progress":
+                    _, current, total, action = msg
+                    self._update_progress(current, total)
+                    self.status_var.set(f"{action}: {current}/{total}")
+                elif kind == "export_progress":
+                    _, current, total = msg
+                    self._update_progress(current, total)
+                    self.status_var.set(f"Exporting: {current}/{total}")
+                elif kind == "done":
+                    _, result = msg
+                    on_done_callback(result)
+                    return  # stop polling
+                elif kind == "error":
+                    _, err_msg = msg
+                    messagebox.showerror("Error", err_msg)
+                    self._set_buttons(True)
+                    self.status_var.set("Error")
+                    return  # stop polling
+        except queue.Empty:
+            pass
+        self.root.after(100, lambda: self._start_polling(msg_queue, on_done_callback))
+
     # ── Classify (shared by scan/sort/export) ──
 
     def _classify(self, source, threshold, callback):
         """Run classification in a thread, then call callback(result) on the main thread."""
+        msg_queue = queue.Queue()
 
         def run():
             try:
                 def progress(current, total, filename):
-                    self.root.after(0, lambda: self._update_progress(current, total))
-                    self.root.after(0, lambda: self.status_var.set(
-                        f"Reading metadata: {current}/{total}"))
+                    msg_queue.put(("progress", current, total))
 
                 result = classify_photos(source, threshold=threshold,
                                          progress_callback=progress)
                 self._result = result
-
-                # Auto-fill bbox fields from GPS bounds on first scan
-                if result.gps_bounds:
-                    b = result.gps_bounds
-
-                    def fill_bbox():
-                        for name, val in [("min_lat", b[0]), ("max_lat", b[1]),
-                                          ("min_lon", b[2]), ("max_lon", b[3])]:
-                            var = getattr(self, f"_{name}_var")
-                            if not var.get().strip():
-                                var.set(f"{val:.6f}")
-
-                    self.root.after(0, fill_bbox)
-
-                self.root.after(0, lambda: callback(result))
+                msg_queue.put(("done", result))
 
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
-                self.root.after(0, lambda: self._set_buttons(True))
-                self.root.after(0, lambda: self.status_var.set("Error"))
+                msg_queue.put(("error", str(e)))
 
         threading.Thread(target=run, daemon=True).start()
+
+        def on_done(result):
+            # Auto-fill bbox fields from GPS bounds on first scan
+            if result.gps_bounds:
+                b = result.gps_bounds
+                for name, val in [("min_lat", b[0]), ("max_lat", b[1]),
+                                  ("min_lon", b[2]), ("max_lon", b[3])]:
+                    var = getattr(self, f"_{name}_var")
+                    if not var.get().strip():
+                        var.set(f"{val:.6f}")
+            callback(result)
+
+        self._start_polling(msg_queue, on_done)
 
     # ── Scan ──
 
@@ -463,34 +495,34 @@ class PortfolioMakerApp:
             self.status_var.set(f"{action} files...")
             self.progress_var.set(0)
 
+            sort_queue = queue.Queue()
+
             def do_sort():
                 try:
                     def progress(current, total, filename):
-                        self.root.after(0, lambda: self._update_progress(current, total))
-                        self.root.after(0, lambda: self.status_var.set(
-                            f"{action}: {current}/{total}"))
+                        sort_queue.put(("sort_progress", current, total, action))
 
                     sorted_result = sort_photos(result, copy=copy,
                                                 progress_callback=progress)
-
-                    def done():
-                        self._show_results(sorted_result)
-                        self._update_badges(sorted_result)
-                        if self.manifest_var.get():
-                            path = write_manifest(sorted_result)
-                            self._log(f"\nManifest: {path}")
-                        past = "copied" if copy else "moved"
-                        self.status_var.set(
-                            f"Done — {sorted_result.nadir_count} nadir, "
-                            f"{sorted_result.oblique_count} oblique {past}")
-                        self._set_buttons(True)
-
-                    self.root.after(0, done)
+                    sort_queue.put(("done", sorted_result))
                 except Exception as e:
-                    self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
-                    self.root.after(0, lambda: self._set_buttons(True))
+                    sort_queue.put(("error", str(e)))
 
             threading.Thread(target=do_sort, daemon=True).start()
+
+            def on_sort_done(sorted_result):
+                self._show_results(sorted_result)
+                self._update_badges(sorted_result)
+                if self.manifest_var.get():
+                    path = write_manifest(sorted_result)
+                    self._log(f"\nManifest: {path}")
+                past = "copied" if copy else "moved"
+                self.status_var.set(
+                    f"Done — {sorted_result.nadir_count} nadir, "
+                    f"{sorted_result.oblique_count} oblique {past}")
+                self._set_buttons(True)
+
+            self._start_polling(sort_queue, on_sort_done)
 
         self._classify(source, threshold, on_classified)
 
@@ -537,42 +569,44 @@ class PortfolioMakerApp:
             self.status_var.set(f"Exporting {filtered.total} photos...")
             self.progress_var.set(0)
 
+            export_queue = queue.Queue()
+            export_manifest_path = [None]  # mutable container for closure
+
             def do_export():
                 try:
                     def progress(current, total, filename):
-                        self.root.after(0, lambda: self._update_progress(current, total))
-                        self.root.after(0, lambda: self.status_var.set(
-                            f"Exporting: {current}/{total}"))
+                        export_queue.put(("export_progress", current, total))
 
                     out = export_photos(filtered, export_dir, copy=True,
                                         progress_callback=progress)
 
                     if self.manifest_var.get():
-                        manifest_path = write_manifest(filtered, Path(out) / "manifest.json")
+                        export_manifest_path[0] = write_manifest(filtered, Path(out) / "manifest.json")
 
-                    def done():
-                        self._update_badges(filtered)
-                        self._clear_log()
-                        self._log(f"Exported {filtered.total} photos to:")
-                        self._log(f"  {out}")
-                        if bbox:
-                            self._log(f"\nArea filter: {bbox[0]:.6f},{bbox[2]:.6f} to {bbox[1]:.6f},{bbox[3]:.6f}")
-                        if filter_type:
-                            self._log(f"Type filter: {filter_type}")
-                        self._log(f"\nBreakdown:")
-                        self._log(f"  Nadir:   {filtered.nadir_count}")
-                        self._log(f"  Oblique: {filtered.oblique_count}")
-                        if self.manifest_var.get():
-                            self._log(f"\nManifest: {manifest_path}")
-                        self.status_var.set(f"Exported {filtered.total} photos")
-                        self._set_buttons(True)
-
-                    self.root.after(0, done)
+                    export_queue.put(("done", out))
                 except Exception as e:
-                    self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
-                    self.root.after(0, lambda: self._set_buttons(True))
+                    export_queue.put(("error", str(e)))
 
             threading.Thread(target=do_export, daemon=True).start()
+
+            def on_export_done(out):
+                self._update_badges(filtered)
+                self._clear_log()
+                self._log(f"Exported {filtered.total} photos to:")
+                self._log(f"  {out}")
+                if bbox:
+                    self._log(f"\nArea filter: {bbox[0]:.6f},{bbox[2]:.6f} to {bbox[1]:.6f},{bbox[3]:.6f}")
+                if filter_type:
+                    self._log(f"Type filter: {filter_type}")
+                self._log(f"\nBreakdown:")
+                self._log(f"  Nadir:   {filtered.nadir_count}")
+                self._log(f"  Oblique: {filtered.oblique_count}")
+                if export_manifest_path[0]:
+                    self._log(f"\nManifest: {export_manifest_path[0]}")
+                self.status_var.set(f"Exported {filtered.total} photos")
+                self._set_buttons(True)
+
+            self._start_polling(export_queue, on_export_done)
 
         self._classify(source, threshold, on_classified)
 
