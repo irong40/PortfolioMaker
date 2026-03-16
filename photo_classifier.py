@@ -150,6 +150,15 @@ class ClassificationResult:
     threshold: float = -70.0
     created_at: str = ""
 
+    @property
+    def gps_bounds(self):
+        """Return (min_lat, max_lat, min_lon, max_lon) from all photos with GPS."""
+        lats = [p.latitude for p in self.photos if p.latitude is not None]
+        lons = [p.longitude for p in self.photos if p.longitude is not None]
+        if not lats or not lons:
+            return None
+        return (min(lats), max(lats), min(lons), max(lons))
+
 
 def classify_pitch(pitch, threshold=-70.0):
     """Classify a gimbal pitch angle as nadir or oblique.
@@ -291,6 +300,77 @@ def sort_photos(result, copy=True, progress_callback=None):
     return result
 
 
+def filter_photos(result, bbox=None, classification=None):
+    """Filter a ClassificationResult to a subset of photos.
+
+    Args:
+        result: ClassificationResult to filter
+        bbox: (min_lat, max_lat, min_lon, max_lon) — GPS bounding box
+        classification: "nadir", "oblique", or None for all
+
+    Returns:
+        New ClassificationResult with only matching photos
+    """
+    filtered = []
+    for p in result.photos:
+        if classification and p.classification != classification:
+            continue
+        if bbox:
+            min_lat, max_lat, min_lon, max_lon = bbox
+            if p.latitude is None or p.longitude is None:
+                continue
+            if not (min_lat <= p.latitude <= max_lat and min_lon <= p.longitude <= max_lon):
+                continue
+        filtered.append(p)
+
+    nadir = sum(1 for p in filtered if p.classification == "nadir")
+    oblique = sum(1 for p in filtered if p.classification == "oblique")
+    unknown = sum(1 for p in filtered if p.classification == "unknown")
+    pitches = [p.pitch for p in filtered if p.pitch is not None]
+
+    return ClassificationResult(
+        source_dir=result.source_dir,
+        nadir_count=nadir,
+        oblique_count=oblique,
+        unknown_count=unknown,
+        total=len(filtered),
+        pitch_min=min(pitches) if pitches else None,
+        pitch_max=max(pitches) if pitches else None,
+        platform=result.platform,
+        photos=filtered,
+        threshold=result.threshold,
+        created_at=result.created_at,
+    )
+
+
+def export_photos(result, output_dir, copy=True, progress_callback=None):
+    """Export filtered photos to a flat output directory.
+
+    Unlike sort_photos which creates nadir/oblique subdirs, this copies
+    all photos in the result into a single folder. Useful for exporting
+    a GPS-filtered subset to feed directly into WebODM.
+
+    Args:
+        result: ClassificationResult (possibly filtered)
+        output_dir: Destination folder
+        copy: If True copy, if False move
+        progress_callback: Optional callable(current, total, filename)
+
+    Returns:
+        Path to output directory
+    """
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    transfer = shutil.copy2 if copy else shutil.move
+
+    for i, photo in enumerate(result.photos):
+        transfer(photo.path, out / photo.filename)
+        if progress_callback and ((i + 1) % 100 == 0 or (i + 1) == len(result.photos)):
+            progress_callback(i + 1, len(result.photos), photo.filename)
+
+    return str(out)
+
+
 def write_manifest(result, output_path=None):
     """Write classification manifest to JSON.
 
@@ -316,6 +396,12 @@ def write_manifest(result, output_path=None):
         "pitch_range": {
             "min": result.pitch_min,
             "max": result.pitch_max,
+        },
+        "gps_bounds": {
+            "min_lat": result.gps_bounds[0] if result.gps_bounds else None,
+            "max_lat": result.gps_bounds[1] if result.gps_bounds else None,
+            "min_lon": result.gps_bounds[2] if result.gps_bounds else None,
+            "max_lon": result.gps_bounds[3] if result.gps_bounds else None,
         },
         "output_dirs": {
             "nadir": result.nadir_dir,
@@ -352,12 +438,20 @@ def main():
 Sorts DJI drone photos into nadir (straight down) and oblique (angled) folders
 based on gimbal pitch angle from EXIF/XMP metadata.
 
+Area filtering lets you extract a subset of photos by GPS bounding box —
+useful for producing deliverables from a specific part of a larger site.
+
 Examples:
   python photo_classifier.py D:\\DronePhotos\\JobSite1
   python photo_classifier.py D:\\DronePhotos\\JobSite1 --threshold -75
   python photo_classifier.py D:\\DronePhotos\\JobSite1 --dry-run
   python photo_classifier.py D:\\DronePhotos\\JobSite1 --metadata-only
   python photo_classifier.py D:\\DronePhotos\\JobSite1 --move
+
+  # Export only nadir photos from the NE corner for volume measurement:
+  python photo_classifier.py D:\\DronePhotos\\JobSite1 --metadata-only
+  python photo_classifier.py D:\\DronePhotos\\JobSite1 --filter nadir \\
+      --bbox 36.827,36.829,-76.415,-76.413 --export D:\\WebODM\\stockpile_job
         """,
     )
     parser.add_argument("source", help="Folder containing drone photos")
@@ -371,6 +465,12 @@ Examples:
                         help="Move files instead of copying (originals will be relocated)")
     parser.add_argument("--no-manifest", action="store_true",
                         help="Skip writing manifest.json")
+    parser.add_argument("--filter", choices=["nadir", "oblique"],
+                        help="Only include photos of this type")
+    parser.add_argument("--bbox", type=str,
+                        help="GPS bounding box: min_lat,max_lat,min_lon,max_lon")
+    parser.add_argument("--export", type=str, metavar="DIR",
+                        help="Export filtered photos to this folder (flat, no nadir/oblique split)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -395,7 +495,7 @@ Examples:
     if result.total == 0:
         sys.exit("No photos found")
 
-    # Summary
+    # Show full-set summary
     log.info("")
     log.info(f"Platform:  {result.platform or 'unknown'}")
     log.info(f"Total:     {result.total} photos")
@@ -405,6 +505,46 @@ Examples:
         log.info(f"Unknown:   {result.unknown_count} (no pitch data)")
     if result.pitch_min is not None:
         log.info(f"Pitch:     {result.pitch_min:.1f} to {result.pitch_max:.1f} degrees")
+    if result.gps_bounds:
+        b = result.gps_bounds
+        log.info(f"GPS area:  {b[0]:.6f},{b[2]:.6f} to {b[1]:.6f},{b[3]:.6f}")
+
+    # Apply filters if requested
+    bbox = None
+    if args.bbox:
+        try:
+            parts = [float(x.strip()) for x in args.bbox.split(",")]
+            if len(parts) != 4:
+                raise ValueError
+            bbox = tuple(parts)
+        except ValueError:
+            sys.exit("--bbox must be 4 comma-separated numbers: min_lat,max_lat,min_lon,max_lon")
+
+    if args.filter or bbox:
+        result = filter_photos(result, bbox=bbox, classification=args.filter)
+        log.info("")
+        filters = []
+        if args.filter:
+            filters.append(f"type={args.filter}")
+        if bbox:
+            filters.append(f"bbox={args.bbox}")
+        log.info(f"Filter:    {', '.join(filters)}")
+        log.info(f"Matched:   {result.total} photos")
+        if result.total == 0:
+            sys.exit("No photos match the filter criteria")
+
+    # Export filtered subset to a flat folder
+    if args.export:
+        log.info("")
+        def on_export_progress(current, total, filename):
+            log.info(f"  Exporting: {current}/{total}")
+        export_path = export_photos(result, args.export, copy=True,
+                                     progress_callback=on_export_progress)
+        log.info(f"Exported {result.total} photos to: {export_path}")
+        if not args.no_manifest:
+            manifest_path = write_manifest(result, Path(export_path) / "manifest.json")
+            log.info(f"Manifest:  {manifest_path}")
+        return
 
     # Dry run or metadata-only — write manifest and stop
     if args.dry_run or args.metadata_only:
@@ -415,7 +555,7 @@ Examples:
             log.info("\n[DRY RUN] No files were copied.")
         return
 
-    # Sort
+    # Sort into nadir/oblique subfolders
     log.info("")
 
     def on_sort_progress(current, total, filename):
