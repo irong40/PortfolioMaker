@@ -457,13 +457,22 @@ class PortfolioMakerApp:
         self.progress_var.set(0)
 
         def on_done(result):
-            self._show_results(result)
-            self._update_badges(result)
-            if self.manifest_var.get():
-                path = write_manifest(result)
-                self._log(f"\nManifest: {path}")
-            self.status_var.set(f"Scan complete — {result.total} photos classified")
-            self._set_buttons(True)
+            try:
+                self._show_results(result)
+                self._update_badges(result)
+                if self.manifest_var.get():
+                    try:
+                        path = write_manifest(result)
+                        self._log(f"\nManifest: {path}")
+                    except (OSError, PermissionError) as e:
+                        self._log(f"\nManifest: could not write to source folder ({e})")
+                        self._log("  (SD card may be read-only — manifest skipped)")
+                self.status_var.set(f"Scan complete — {result.total} photos classified")
+            except Exception as e:
+                self._log(f"\nError displaying results: {e}")
+                self.status_var.set("Error displaying results")
+            finally:
+                self._set_buttons(True)
 
         self._classify(source, threshold, on_done)
 
@@ -511,16 +520,23 @@ class PortfolioMakerApp:
             threading.Thread(target=do_sort, daemon=True).start()
 
             def on_sort_done(sorted_result):
-                self._show_results(sorted_result)
-                self._update_badges(sorted_result)
-                if self.manifest_var.get():
-                    path = write_manifest(sorted_result)
-                    self._log(f"\nManifest: {path}")
-                past = "copied" if copy else "moved"
-                self.status_var.set(
-                    f"Done — {sorted_result.nadir_count} nadir, "
-                    f"{sorted_result.oblique_count} oblique {past}")
-                self._set_buttons(True)
+                try:
+                    self._show_results(sorted_result)
+                    self._update_badges(sorted_result)
+                    if self.manifest_var.get():
+                        try:
+                            path = write_manifest(sorted_result)
+                            self._log(f"\nManifest: {path}")
+                        except (OSError, PermissionError) as e:
+                            self._log(f"\nManifest: could not write ({e})")
+                    past = "copied" if copy else "moved"
+                    self.status_var.set(
+                        f"Done — {sorted_result.nadir_count} nadir, "
+                        f"{sorted_result.oblique_count} oblique {past}")
+                except Exception as e:
+                    self.status_var.set(f"Error: {e}")
+                finally:
+                    self._set_buttons(True)
 
             self._start_polling(sort_queue, on_sort_done)
 
@@ -590,21 +606,25 @@ class PortfolioMakerApp:
             threading.Thread(target=do_export, daemon=True).start()
 
             def on_export_done(out):
-                self._update_badges(filtered)
-                self._clear_log()
-                self._log(f"Exported {filtered.total} photos to:")
-                self._log(f"  {out}")
-                if bbox:
-                    self._log(f"\nArea filter: {bbox[0]:.6f},{bbox[2]:.6f} to {bbox[1]:.6f},{bbox[3]:.6f}")
-                if filter_type:
-                    self._log(f"Type filter: {filter_type}")
-                self._log(f"\nBreakdown:")
-                self._log(f"  Nadir:   {filtered.nadir_count}")
-                self._log(f"  Oblique: {filtered.oblique_count}")
-                if export_manifest_path[0]:
-                    self._log(f"\nManifest: {export_manifest_path[0]}")
-                self.status_var.set(f"Exported {filtered.total} photos")
-                self._set_buttons(True)
+                try:
+                    self._update_badges(filtered)
+                    self._clear_log()
+                    self._log(f"Exported {filtered.total} photos to:")
+                    self._log(f"  {out}")
+                    if bbox:
+                        self._log(f"\nArea filter: {bbox[0]:.6f},{bbox[2]:.6f} to {bbox[1]:.6f},{bbox[3]:.6f}")
+                    if filter_type:
+                        self._log(f"Type filter: {filter_type}")
+                    self._log(f"\nBreakdown:")
+                    self._log(f"  Nadir:   {filtered.nadir_count}")
+                    self._log(f"  Oblique: {filtered.oblique_count}")
+                    if export_manifest_path[0]:
+                        self._log(f"\nManifest: {export_manifest_path[0]}")
+                    self.status_var.set(f"Exported {filtered.total} photos")
+                except Exception as e:
+                    self.status_var.set(f"Error: {e}")
+                finally:
+                    self._set_buttons(True)
 
             self._start_polling(export_queue, on_export_done)
 
