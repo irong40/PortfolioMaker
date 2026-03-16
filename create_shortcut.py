@@ -11,8 +11,8 @@ except ImportError:
     sys.exit("pip install winshell pywin32")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PYTHON_EXE = sys.executable
-TARGET_SCRIPT = SCRIPT_DIR / "portfolio_maker.py"
+PYTHON_EXE = sys.executable.replace("python.exe", "pythonw.exe")
+TARGET_SCRIPT = SCRIPT_DIR / "portfolio_maker.pyw"
 ICON_FILE = SCRIPT_DIR / "portfolio_maker.ico"
 
 desktop = winshell.desktop()
