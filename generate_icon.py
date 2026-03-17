@@ -5,7 +5,7 @@ Run once: python generate_icon.py
 """
 
 import math
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 SENTINEL_PURPLE = "#5B2C6F"
 SENTINEL_LIGHT = "#AF7AC5"

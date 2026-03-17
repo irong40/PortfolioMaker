@@ -1,10 +1,7 @@
 """Tests for photo_classifier core logic."""
 
 import json
-import shutil
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 

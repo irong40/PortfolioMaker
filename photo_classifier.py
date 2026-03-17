@@ -22,12 +22,14 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 
 # ─── DRONE-PIPELINE IMPORTS ─────────────────────────────────────────────────
 # Add drone-pipeline to path so we can reuse its battle-tested EXIF logic
 
-DRONE_PIPELINE_DIR = Path(r"C:\Users\redle.SOULAAN\Documents\drone-pipeline")
+DRONE_PIPELINE_DIR = Path(
+    os.environ.get("DRONE_PIPELINE_DIR", r"C:\Users\redle.SOULAAN\Documents\drone-pipeline")
+)
 if DRONE_PIPELINE_DIR.exists() and str(DRONE_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(DRONE_PIPELINE_DIR))
 
@@ -45,6 +47,7 @@ import re
 
 def _fallback_extract_xmp_gimbal(filepath):
     """Minimal XMP gimbal extraction — used only if drone-pipeline not on path."""
+    log = logging.getLogger(__name__)
     try:
         with open(filepath, "rb") as f:
             data = f.read(500000)
@@ -61,12 +64,14 @@ def _fallback_extract_xmp_gimbal(filepath):
             "relative_altitude": float(fields.get("RelativeAltitude", 0)),
             "absolute_altitude": float(fields.get("AbsoluteAltitude", 0)),
         }
-    except Exception:
+    except (OSError, ValueError, KeyError) as e:
+        log.debug(f"XMP extraction failed for {filepath}: {e}")
         return None
 
 
 def _fallback_extract_gps(filepath):
     """Minimal GPS extraction — used only if drone-pipeline not on path."""
+    log = logging.getLogger(__name__)
     try:
         from PIL import Image
         img = Image.open(filepath)
@@ -88,7 +93,8 @@ def _fallback_extract_gps(filepath):
         lon = dms_to_decimal(gps_info[4], gps_info[3])
         alt = float(gps_info.get(6, 0))
         return [lon, lat, alt]
-    except Exception:
+    except (OSError, KeyError, ValueError, TypeError) as e:
+        log.debug(f"GPS extraction failed for {filepath}: {e}")
         return None
 
 
@@ -117,7 +123,7 @@ def get_platform(filepath):
 
 # ─── CLASSIFICATION ─────────────────────────────────────────────────────────
 
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".dng"}
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".dng", ".tif", ".tiff"}
 
 @dataclass
 class PhotoMeta:
@@ -147,8 +153,10 @@ class ClassificationResult:
     photos: list = field(default_factory=list)
     nadir_dir: str = ""
     oblique_dir: str = ""
+    unknown_dir: str = ""
     threshold: float = -70.0
     created_at: str = ""
+    failed_transfers: list = field(default_factory=list)
 
     @property
     def gps_bounds(self):
@@ -266,7 +274,8 @@ def sort_photos(result, copy=True, progress_callback=None):
         progress_callback: Optional callable(current, total, filename)
 
     Returns:
-        Updated ClassificationResult with nadir_dir/oblique_dir paths set
+        Updated ClassificationResult with nadir_dir/oblique_dir/unknown_dir paths set.
+        Any per-file failures are recorded in result.failed_transfers.
     """
     log = logging.getLogger(__name__)
     source = Path(result.source_dir)
@@ -280,6 +289,7 @@ def sort_photos(result, copy=True, progress_callback=None):
 
     result.nadir_dir = str(nadir_dir)
     result.oblique_dir = str(oblique_dir)
+    result.failed_transfers = []
 
     transfer = shutil.copy2 if copy else shutil.move
 
@@ -290,12 +300,24 @@ def sort_photos(result, copy=True, progress_callback=None):
             dest = oblique_dir / photo.filename
         else:
             unknown_dir.mkdir(exist_ok=True)
+            result.unknown_dir = str(unknown_dir)
             dest = unknown_dir / photo.filename
 
-        transfer(photo.path, dest)
+        try:
+            if dest.exists():
+                log.warning(f"Skipping collision: {dest}")
+                result.failed_transfers.append((photo.filename, "file already exists"))
+                continue
+            transfer(photo.path, dest)
+        except (OSError, shutil.Error) as e:
+            log.error(f"Failed to {'copy' if copy else 'move'} {photo.filename}: {e}")
+            result.failed_transfers.append((photo.filename, str(e)))
 
         if progress_callback and ((i + 1) % 100 == 0 or (i + 1) == len(result.photos)):
             progress_callback(i + 1, len(result.photos), photo.filename)
+
+    if result.failed_transfers:
+        log.warning(f"{len(result.failed_transfers)} file(s) failed to transfer")
 
     return result
 
@@ -357,16 +379,31 @@ def export_photos(result, output_dir, copy=True, progress_callback=None):
         progress_callback: Optional callable(current, total, filename)
 
     Returns:
-        Path to output directory
+        Path to output directory. Any failures are recorded in result.failed_transfers.
     """
+    log = logging.getLogger(__name__)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     transfer = shutil.copy2 if copy else shutil.move
+    result.failed_transfers = []
 
     for i, photo in enumerate(result.photos):
-        transfer(photo.path, out / photo.filename)
+        dest = out / photo.filename
+        try:
+            if dest.exists():
+                log.warning(f"Skipping collision: {dest}")
+                result.failed_transfers.append((photo.filename, "file already exists"))
+                continue
+            transfer(photo.path, dest)
+        except (OSError, shutil.Error) as e:
+            log.error(f"Failed to export {photo.filename}: {e}")
+            result.failed_transfers.append((photo.filename, str(e)))
+
         if progress_callback and ((i + 1) % 100 == 0 or (i + 1) == len(result.photos)):
             progress_callback(i + 1, len(result.photos), photo.filename)
+
+    if result.failed_transfers:
+        log.warning(f"{len(result.failed_transfers)} file(s) failed to export")
 
     return str(out)
 
@@ -406,6 +443,7 @@ def write_manifest(result, output_path=None):
         "output_dirs": {
             "nadir": result.nadir_dir,
             "oblique": result.oblique_dir,
+            "unknown": result.unknown_dir,
         },
         "photos": [
             {
