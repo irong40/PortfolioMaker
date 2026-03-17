@@ -231,6 +231,28 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     # 7. Write manifest
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
+    # 8. Generate report
+    report_result = None
+    try:
+        from report_generator import generate_report
+        notify("report", f"Generating {preset['report_type']} report")
+        report_data = {
+            "site_name": site_name,
+            "date": date_str,
+            "job_type": job_type,
+            "total_photos": classification.total,
+            "nadir_count": classification.nadir_count,
+            "oblique_count": classification.oblique_count,
+            "platform": classification.platform,
+            "gps_bounds": classification.gps_bounds,
+            "ortho_path": downloaded.get("orthophoto.tif"),
+            "dsm_path": downloaded.get("dsm.tif"),
+            "downloads": downloaded,
+        }
+        report_result = generate_report(preset["report_type"], report_data, output_dir)
+    except ImportError:
+        log.warning("report_generator not available — skipping report")
+
     notify("complete", f"Output: {output_dir}")
 
     return {
@@ -241,6 +263,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         "task_uuid": task_uuid,
         "preset": preset,
         "date": date_str,
+        "report": report_result,
     }
 
 
@@ -280,6 +303,26 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
     sort_photos(working_set, copy=True)
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
+    # Generate report even in portfolio-only mode
+    report_result = None
+    try:
+        from report_generator import generate_report
+        notify("report", f"Generating {preset['report_type']} report")
+        report_data = {
+            "site_name": site_name,
+            "date": date_str,
+            "job_type": job_type,
+            "total_photos": classification.total,
+            "nadir_count": classification.nadir_count,
+            "oblique_count": classification.oblique_count,
+            "platform": classification.platform,
+            "gps_bounds": classification.gps_bounds,
+            "downloads": {},
+        }
+        report_result = generate_report(preset["report_type"], report_data, output_dir)
+    except ImportError:
+        log.warning("report_generator not available — skipping report")
+
     notify("complete", f"Output: {output_dir}")
 
     return {
@@ -290,4 +333,5 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
         "task_uuid": None,
         "preset": preset,
         "date": date_str,
+        "report": report_result,
     }
