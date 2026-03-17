@@ -648,6 +648,17 @@ class PortfolioMakerApp:
                 "Use 'Portfolio Only' to sort photos without processing.")
             return
 
+        # Check minimum photo count
+        min_photos = preset.get("min_photos", 20)
+        photo_count = self._working_set.total if self._working_set else 0
+        if photo_count < min_photos:
+            if not messagebox.askyesno("Low Photo Count",
+                    f"This job type ({preset['label']}) needs at least {min_photos} photos "
+                    f"but only {photo_count} were selected.\n\n"
+                    f"Processing will likely fail or produce poor results.\n\n"
+                    f"Continue anyway?"):
+                return
+
         self._set_running(True)
         self._clear_log()
         self.progress_var.set(0)

@@ -30,6 +30,7 @@ PRESETS = {
         "label": "Construction Progress",
         "description": "Orthomosaic + DSM for site progress tracking",
         "photo_filter": "nadir",
+        "min_photos": 20,
         "odm_options": [
             {"name": "dsm", "value": True},
             {"name": "dtm", "value": True},
@@ -46,6 +47,7 @@ PRESETS = {
         "label": "Property Survey",
         "description": "Orthomosaic + DSM + DTM + point cloud for survey",
         "photo_filter": "nadir",
+        "min_photos": 20,
         "odm_options": [
             {"name": "dsm", "value": True},
             {"name": "dtm", "value": True},
@@ -62,6 +64,7 @@ PRESETS = {
         "label": "Roof Inspection",
         "description": "Textured 3D mesh for roof condition assessment",
         "photo_filter": None,
+        "min_photos": 30,
         "odm_options": [
             {"name": "dsm", "value": True},
             {"name": "mesh-octree-depth", "value": 12},
@@ -77,6 +80,7 @@ PRESETS = {
         "label": "Structures",
         "description": "3D model + point cloud for structural inspection",
         "photo_filter": None,
+        "min_photos": 40,
         "odm_options": [
             {"name": "dsm", "value": True},
             {"name": "mesh-octree-depth", "value": 12},
@@ -92,6 +96,7 @@ PRESETS = {
         "label": "Vegetation / Land",
         "description": "Orthomosaic for vegetation analysis (Path E)",
         "photo_filter": "nadir",
+        "min_photos": 20,
         "odm_options": [
             {"name": "dsm", "value": True},
             {"name": "orthophoto-resolution", "value": 5},
@@ -107,6 +112,7 @@ PRESETS = {
         "label": "Real Estate / Marketing",
         "description": "Orthomosaic + 3D model for property showcase",
         "photo_filter": None,
+        "min_photos": 20,
         "odm_options": [
             {"name": "dsm", "value": True},
             {"name": "mesh-octree-depth", "value": 11},
@@ -122,6 +128,7 @@ PRESETS = {
         "label": "Gaussian Splat",
         "description": "3D Gaussian Splat via MipMap Desktop",
         "photo_filter": None,
+        "min_photos": 50,
         "engine": "mipmap",
         "odm_options": [],
         "downloads": ["gs_ply", "gs_sog_tiles"],
