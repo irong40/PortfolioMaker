@@ -5,10 +5,10 @@ from odm_presets import PRESETS, get_preset, JOB_TYPES
 
 
 class TestPresets:
-    def test_all_six_job_types_exist(self):
+    def test_all_seven_job_types_exist(self):
         expected = {
             "construction_progress", "property_survey", "roof_inspection",
-            "structures", "vegetation", "real_estate",
+            "structures", "vegetation", "real_estate", "gaussian_splat",
         }
         assert set(PRESETS.keys()) == expected
 
@@ -35,6 +35,8 @@ class TestPresets:
 
     def test_odm_options_include_split_merge(self):
         for name, preset in PRESETS.items():
+            if preset.get("engine") == "mipmap":
+                continue  # MipMap presets don't use ODM options
             option_names = {o["name"] for o in preset["odm_options"]}
             assert "split" in option_names, f"{name} missing split option"
             assert "split-overlap" in option_names, f"{name} missing split-overlap"
@@ -42,6 +44,8 @@ class TestPresets:
 
     def test_split_value_is_4(self):
         for name, preset in PRESETS.items():
+            if preset.get("engine") == "mipmap":
+                continue
             split_opt = next(o for o in preset["odm_options"] if o["name"] == "split")
             assert split_opt["value"] == 4, f"{name} split should be 4"
 
@@ -50,13 +54,40 @@ class TestPresets:
             assert isinstance(preset["downloads"], list)
             assert len(preset["downloads"]) > 0
 
-    def test_all_presets_download_orthophoto(self):
+    def test_odm_presets_download_orthophoto(self):
         for name, preset in PRESETS.items():
+            if preset.get("engine") == "mipmap":
+                continue
             assert "orthophoto.tif" in preset["downloads"], f"{name} should download orthophoto"
 
     def test_report_type_matches_key(self):
         for name, preset in PRESETS.items():
             assert preset["report_type"] == name
+
+
+class TestGaussianSplatPreset:
+    def test_gaussian_splat_in_job_types(self):
+        assert ("gaussian_splat", "Gaussian Splat") in JOB_TYPES
+
+    def test_engine_is_mipmap(self):
+        assert PRESETS["gaussian_splat"]["engine"] == "mipmap"
+
+    def test_no_odm_options(self):
+        assert PRESETS["gaussian_splat"]["odm_options"] == []
+
+    def test_photo_filter_none(self):
+        assert PRESETS["gaussian_splat"]["photo_filter"] is None
+
+    def test_downloads(self):
+        assert PRESETS["gaussian_splat"]["downloads"] == ["gs_ply", "gs_sog_tiles"]
+
+    def test_mipmap_settings(self):
+        settings = PRESETS["gaussian_splat"]["mipmap_settings"]
+        assert settings["resolution_level"] == 3
+        assert settings["mesh_decimate_ratio"] == 0.5
+
+    def test_report_type(self):
+        assert PRESETS["gaussian_splat"]["report_type"] == "gaussian_splat"
 
 
 class TestGetPreset:

@@ -9,7 +9,7 @@ class TestReportTypes:
     def test_all_types_registered(self):
         expected = {
             "construction_progress", "property_survey", "roof_inspection",
-            "structures", "vegetation", "real_estate",
+            "structures", "vegetation", "real_estate", "gaussian_splat",
         }
         assert set(REPORT_TYPES.keys()) == expected
 
@@ -98,7 +98,15 @@ class TestGenerateReport:
         result = generate_report("property_survey", data, str(tmp_path))
         assert result is not None
 
-    def test_all_six_types_produce_unique_pdfs(self, tmp_path):
+    def test_gaussian_splat_creates_pdf(self, tmp_path):
+        data = {**SAMPLE_DATA, "job_type": "gaussian_splat", "engine": "mipmap",
+                "mipmap_settings": {"resolution_level": 3, "mesh_decimate_ratio": 0.5}}
+        result = generate_report("gaussian_splat", data, str(tmp_path))
+        assert result is not None
+        assert os.path.exists(result["pdf_path"])
+        assert "gaussian_splat" in result["pdf_path"]
+
+    def test_all_seven_types_produce_unique_pdfs(self, tmp_path):
         pdfs = []
         for report_type in REPORT_TYPES:
             data = {**SAMPLE_DATA, "job_type": report_type}
@@ -106,5 +114,4 @@ class TestGenerateReport:
             assert result is not None, f"{report_type} failed"
             pdfs.append(result["pdf_path"])
 
-        # All files should be different (different filenames at minimum)
-        assert len(set(pdfs)) == 6
+        assert len(set(pdfs)) == 7

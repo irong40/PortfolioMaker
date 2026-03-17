@@ -15,6 +15,7 @@ JOB_TYPES = [
     ("structures", "Structures"),
     ("vegetation", "Vegetation / Land"),
     ("real_estate", "Real Estate / Marketing"),
+    ("gaussian_splat", "Gaussian Splat"),
 ]
 
 # Shared split-merge options (all presets use these to stay within 12GB VRAM)
@@ -116,6 +117,19 @@ PRESETS = {
         ] + _SPLIT_MERGE,
         "downloads": ["orthophoto.tif", "dsm.tif", "textured_model.zip"],
         "report_type": "real_estate",
+    },
+    "gaussian_splat": {
+        "label": "Gaussian Splat",
+        "description": "3D Gaussian Splat via MipMap Desktop",
+        "photo_filter": None,
+        "engine": "mipmap",
+        "odm_options": [],
+        "downloads": ["gs_ply", "gs_sog_tiles"],
+        "report_type": "gaussian_splat",
+        "mipmap_settings": {
+            "resolution_level": 3,
+            "mesh_decimate_ratio": 0.5,
+        },
     },
 }
 

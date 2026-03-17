@@ -50,6 +50,7 @@ REPORT_TYPES = {
     "structures": "Structural Inspection Report",
     "vegetation": "Vegetation Analysis Report",
     "real_estate": "Real Estate Property Report",
+    "gaussian_splat": "Gaussian Splat Model Report",
 }
 
 # ─── SHARED STYLES ─────────────────────────────────────────────────────────
@@ -307,6 +308,34 @@ def _build_real_estate_sections(elements, styles, data):
     ))
 
 
+def _build_gaussian_splat_sections(elements, styles, data):
+    elements.append(Paragraph("Gaussian Splat Model", styles["SectionHeader"]))
+    elements.append(Paragraph(
+        "3D Gaussian Splatting is a novel rendering technique that represents "
+        "scenes as collections of 3D Gaussians rather than traditional meshes or "
+        "point clouds. The result is photorealistic novel-view synthesis with "
+        "real-time rendering capability.",
+        styles["SentinelBody"],
+    ))
+    elements.append(Paragraph("Processing Details", styles["SectionHeader"]))
+    mipmap = data.get("mipmap_settings", {})
+    res_level = mipmap.get("resolution_level", 3)
+    decimate = mipmap.get("mesh_decimate_ratio", 0.5)
+    elements.append(Paragraph(
+        f"Processed via MipMap Desktop with resolution level {res_level} and "
+        f"mesh decimation ratio {decimate}. Gaussian Splat outputs include PLY "
+        f"point cloud and SOG tile set for web-based viewing.",
+        styles["SentinelBody"],
+    ))
+    elements.append(Paragraph("Deliverables", styles["SectionHeader"]))
+    elements.append(Paragraph(
+        "The Gaussian Splat PLY file can be loaded in compatible viewers for "
+        "interactive 3D exploration. SOG tiles enable streaming playback in "
+        "web browsers without downloading the full model.",
+        styles["SentinelBody"],
+    ))
+
+
 _SECTION_BUILDERS = {
     "construction_progress": _build_construction_sections,
     "property_survey": _build_survey_sections,
@@ -314,6 +343,7 @@ _SECTION_BUILDERS = {
     "structures": _build_structures_sections,
     "vegetation": _build_vegetation_sections,
     "real_estate": _build_real_estate_sections,
+    "gaussian_splat": _build_gaussian_splat_sections,
 }
 
 
@@ -321,12 +351,22 @@ _SECTION_BUILDERS = {
 
 def _build_methodology(elements, styles, data):
     elements.append(Paragraph("Methodology", styles["SectionHeader"]))
+    engine = data.get("engine", "nodeodm")
+    if engine == "mipmap":
+        processing_text = (
+            "Photogrammetric processing and Gaussian Splat generation were "
+            "performed using MipMap Desktop with optimized VRAM settings."
+        )
+    else:
+        processing_text = (
+            "Photogrammetric processing was performed using OpenDroneMap via "
+            "NodeODM with split-merge enabled for memory-efficient reconstruction."
+        )
     elements.append(Paragraph(
         "Aerial data was collected using a consumer drone platform with "
         "integrated GPS and gimbal-stabilized camera. Photos were classified "
-        "by gimbal pitch angle (nadir: straight down; oblique: angled). "
-        "Photogrammetric processing was performed using OpenDroneMap via "
-        "NodeODM with split-merge enabled for memory-efficient reconstruction.",
+        f"by gimbal pitch angle (nadir: straight down; oblique: angled). "
+        f"{processing_text}",
         styles["SentinelBody"],
     ))
     elements.append(Paragraph(
