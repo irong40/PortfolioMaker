@@ -55,7 +55,7 @@ def check_mipmap() -> bool:
             "Gaussian Splat output will not be generated", gs_dlls_path
         )
 
-    return engine_found
+    return engine_found and gs_dlls_found
 
 
 # ─── TASK JSON BUILDER ────────────────────────────────────────────────────────

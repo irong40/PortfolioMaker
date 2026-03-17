@@ -6,16 +6,14 @@ No GUI dependency — called by portfolio_maker.py or CLI.
 """
 
 import os
-import sys
 import json
 import logging
-import shutil
 import requests
 from pathlib import Path
 from datetime import datetime, timezone
 
 from photo_classifier import (
-    classify_photos, filter_photos, sort_photos, export_photos, write_manifest,
+    classify_photos, filter_photos, export_photos, write_manifest,
 )
 from odm_presets import get_preset
 from mipmap_service import run_mipmap_pipeline, copy_splat_outputs, check_mipmap
@@ -215,14 +213,18 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     downloaded = {}
 
     if engine == "mipmap":
-        # MipMap pipeline
-        photo_dir = working_set.source_dir
+        # MipMap pipeline — export filtered photos to staging dir
         mipmap_settings = preset.get("mipmap_settings", {})
         working_dir = Path(output_dir) / "_mipmap_work"
+        staging_dir = working_dir / "photos"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        for photo in working_set.photos:
+            import shutil as _shutil
+            _shutil.copy2(photo.path, staging_dir / photo.filename)
         notify("submit", f"Launching MipMap with {working_set.total} photos")
 
         mipmap_result = run_mipmap_pipeline(
-            photo_dir=photo_dir,
+            photo_dir=str(staging_dir),
             working_dir=working_dir,
             progress_callback=lambda pct: notify("processing", f"MipMap {pct:.0f}%"),
             resolution_level=mipmap_settings.get("resolution_level", 3),
@@ -280,12 +282,14 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             "mipmap_settings": preset.get("mipmap_settings", {}),
         }
         report_result = generate_report(preset["report_type"], report_data, output_dir)
+        if report_result is None:
+            notify("warning", "Report generation failed — deliverable incomplete")
     except ImportError:
         log.warning("report_generator not available — skipping report")
 
     notify("complete", f"Output: {output_dir}")
 
-    return {
+    result = {
         "output_dir": output_dir,
         "classification": classification,
         "working_set": working_set,
@@ -295,6 +299,9 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         "date": date_str,
         "report": report_result,
     }
+    if report_result is None:
+        result["warning"] = "Report generation failed"
+    return result
 
 
 def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
@@ -330,7 +337,9 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
     os.makedirs(output_dir, exist_ok=True)
 
     write_site_info(output_dir, site_name, job_type)
-    sort_photos(working_set, copy=True)
+
+    # Export filtered photos to output_dir (not sort into source folder)
+    export_photos(working_set, output_dir, copy=True)
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
     # Generate report even in portfolio-only mode
@@ -350,12 +359,14 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
             "downloads": {},
         }
         report_result = generate_report(preset["report_type"], report_data, output_dir)
+        if report_result is None:
+            notify("warning", "Report generation failed — deliverable incomplete")
     except ImportError:
         log.warning("report_generator not available — skipping report")
 
     notify("complete", f"Output: {output_dir}")
 
-    return {
+    result = {
         "output_dir": output_dir,
         "classification": classification,
         "working_set": working_set,
@@ -365,3 +376,6 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
         "date": date_str,
         "report": report_result,
     }
+    if report_result is None:
+        result["warning"] = "Report generation failed"
+    return result

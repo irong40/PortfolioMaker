@@ -8,7 +8,6 @@ Follows the pattern established by vegetation_report.py in drone-pipeline.
 import os
 import logging
 from datetime import datetime
-from pathlib import Path
 
 # ─── REPORTLAB IMPORT ──────────────────────────────────────────────────────
 
@@ -16,11 +15,11 @@ try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.units import inch
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.colors import HexColor, white, black
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from reportlab.lib.colors import HexColor, white
+    from reportlab.lib.enums import TA_CENTER
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-        PageBreak, HRFlowable,
+        PageBreak,
     )
     REPORTLAB_AVAILABLE = True
 except ImportError:

@@ -34,7 +34,7 @@ if DRONE_PIPELINE_DIR.exists() and str(DRONE_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(DRONE_PIPELINE_DIR))
 
 try:
-    from ingest import extract_gps_from_exif, extract_xmp_gimbal, parse_dji_filename
+    from ingest import extract_gps_from_exif, extract_xmp_gimbal
     from platform_detect import detect_platform_from_file
     PIPELINE_AVAILABLE = True
 except ImportError:
