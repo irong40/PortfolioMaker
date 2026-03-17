@@ -18,6 +18,7 @@ from photo_classifier import (
     classify_photos, filter_photos, sort_photos, export_photos, write_manifest,
 )
 from odm_presets import get_preset
+from mipmap_service import run_mipmap_pipeline, copy_splat_outputs, check_mipmap
 
 PORTFOLIO_ROOT = os.environ.get("PORTFOLIO_ROOT", r"E:\Portfolio")
 NODEODM_URL = os.environ.get("NODEODM_URL", "http://localhost:3000")
@@ -209,24 +210,51 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     # 4. Write site info
     write_site_info(output_dir, site_name, job_type)
 
-    # 5. Submit to NodeODM
-    photo_paths = [p.path for p in working_set.photos]
-    task_name = f"portfolio-{site_name[:20]}-{date_str}"
-    notify("submit", f"Submitting {len(photo_paths)} photos to NodeODM")
+    # 5. Route to engine
+    engine = preset.get("engine", "nodeodm")
+    downloaded = {}
 
-    task_uuid, result = submit_to_nodeodm(
-        photo_paths, preset["odm_options"], task_name=task_name, base_url=base_url,
-    )
+    if engine == "mipmap":
+        # MipMap pipeline
+        photo_dir = working_set.source_dir
+        mipmap_settings = preset.get("mipmap_settings", {})
+        working_dir = Path(output_dir) / "_mipmap_work"
+        notify("submit", f"Launching MipMap with {working_set.total} photos")
 
-    if task_uuid is None:
-        return {"error": f"NodeODM: {result}", "output_dir": output_dir,
-                "classification": classification, "working_set": working_set}
+        mipmap_result = run_mipmap_pipeline(
+            photo_dir=photo_dir,
+            working_dir=working_dir,
+            progress_callback=lambda pct: notify("processing", f"MipMap {pct:.0f}%"),
+            resolution_level=mipmap_settings.get("resolution_level", 3),
+            mesh_decimate_ratio=mipmap_settings.get("mesh_decimate_ratio", 0.5),
+        )
 
-    notify("processing", "NodeODM processing complete")
+        if mipmap_result.get("returncode", 1) != 0:
+            return {"error": f"MipMap failed (exit code {mipmap_result.get('returncode')})",
+                    "output_dir": output_dir, "classification": classification,
+                    "working_set": working_set}
 
-    # 6. Download outputs
-    notify("download", "Downloading outputs")
-    downloaded = download_outputs(task_uuid, output_dir, preset["downloads"], base_url=base_url)
+        notify("download", "Copying splat outputs")
+        downloaded = copy_splat_outputs(working_dir, output_dir)
+        notify("processing", "MipMap processing complete")
+    else:
+        # NodeODM pipeline
+        photo_paths = [p.path for p in working_set.photos]
+        task_name = f"portfolio-{site_name[:20]}-{date_str}"
+        notify("submit", f"Submitting {len(photo_paths)} photos to NodeODM")
+
+        task_uuid, result = submit_to_nodeodm(
+            photo_paths, preset["odm_options"], task_name=task_name, base_url=base_url,
+        )
+
+        if task_uuid is None:
+            return {"error": f"NodeODM: {result}", "output_dir": output_dir,
+                    "classification": classification, "working_set": working_set}
+
+        notify("processing", "NodeODM processing complete")
+
+        notify("download", "Downloading outputs")
+        downloaded = download_outputs(task_uuid, output_dir, preset["downloads"], base_url=base_url)
 
     # 7. Write manifest
     write_manifest(working_set, Path(output_dir) / "manifest.json")
@@ -248,6 +276,8 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             "ortho_path": downloaded.get("orthophoto.tif"),
             "dsm_path": downloaded.get("dsm.tif"),
             "downloads": downloaded,
+            "engine": engine,
+            "mipmap_settings": preset.get("mipmap_settings", {}),
         }
         report_result = generate_report(preset["report_type"], report_data, output_dir)
     except ImportError:
@@ -260,7 +290,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         "classification": classification,
         "working_set": working_set,
         "downloaded": downloaded,
-        "task_uuid": task_uuid,
+        "task_uuid": None if engine == "mipmap" else task_uuid,
         "preset": preset,
         "date": date_str,
         "report": report_result,

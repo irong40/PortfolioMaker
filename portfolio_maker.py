@@ -27,6 +27,7 @@ from odm_presets import JOB_TYPES, get_preset
 from portfolio_service import (
     check_nodeodm, scan_for_job, process_job, portfolio_only, PORTFOLIO_ROOT,
 )
+from mipmap_service import check_mipmap
 
 # ─── COLORS / STYLE ────────────────────────────────────────────────────────
 
@@ -107,6 +108,7 @@ class PortfolioMakerApp:
         self._working_set = None
         self._running = False
         self._nodeodm_ok = False
+        self._mipmap_ok = False
 
         configure_styles()
         self._build_header()
@@ -160,6 +162,18 @@ class PortfolioMakerApp:
                                         font=(FONT_FAMILY, 8), fg=TEXT_DIM,
                                         bg=SENTINEL_PURPLE)
         self._nodeodm_label.pack(side="left")
+
+        # MipMap status indicator
+        self._mipmap_frame = tk.Frame(title_row, bg=SENTINEL_PURPLE)
+        self._mipmap_frame.pack(side="right", padx=(0, 12))
+        self._mipmap_dot = tk.Canvas(self._mipmap_frame, width=10, height=10,
+                                      bg=SENTINEL_PURPLE, highlightthickness=0)
+        self._mipmap_dot.pack(side="left", padx=(0, 4))
+        self._mipmap_dot.create_oval(1, 1, 9, 9, fill=TEXT_DIM, outline="")
+        self._mipmap_label = tk.Label(self._mipmap_frame, text="MipMap",
+                                       font=(FONT_FAMILY, 8), fg=TEXT_DIM,
+                                       bg=SENTINEL_PURPLE)
+        self._mipmap_label.pack(side="left")
 
         tk.Label(header, text="Select job type  |  Scan photos  |  Process or sort",
                  font=(FONT_FAMILY, 9), fg="#D7BDE2",
@@ -365,6 +379,10 @@ class PortfolioMakerApp:
         self._nodeodm_ok = info is not None
         self.root.after(0, self._update_nodeodm_indicator, info)
 
+        # Also check MipMap
+        self._mipmap_ok = check_mipmap()
+        self.root.after(0, self._update_mipmap_indicator)
+
     def _update_nodeodm_indicator(self, info):
         self._nodeodm_dot.delete("all")
         if info:
@@ -374,6 +392,15 @@ class PortfolioMakerApp:
         else:
             self._nodeodm_dot.create_oval(1, 1, 9, 9, fill=RED, outline="")
             self._nodeodm_label.configure(text="NodeODM offline", fg=RED)
+
+    def _update_mipmap_indicator(self):
+        self._mipmap_dot.delete("all")
+        if self._mipmap_ok:
+            self._mipmap_dot.create_oval(1, 1, 9, 9, fill=GREEN, outline="")
+            self._mipmap_label.configure(text="MipMap installed", fg=GREEN)
+        else:
+            self._mipmap_dot.create_oval(1, 1, 9, 9, fill=RED, outline="")
+            self._mipmap_label.configure(text="MipMap not found", fg=RED)
 
     # ── Job Description Update ──
 
@@ -605,7 +632,17 @@ class PortfolioMakerApp:
         if site is None:
             return
 
-        if not self._nodeodm_ok:
+        job_type = self.job_type_var.get()
+        preset = get_preset(job_type)
+        engine = preset.get("engine", "nodeodm")
+
+        if engine == "mipmap" and not self._mipmap_ok:
+            messagebox.showerror("MipMap Not Found",
+                "MipMap Desktop is not installed at the expected path.\n\n"
+                "Install MipMap Desktop or use a different job type.")
+            return
+
+        if engine != "mipmap" and not self._nodeodm_ok:
             messagebox.showerror("NodeODM Offline",
                 "NodeODM is not reachable. Start Docker or check the URL in Advanced settings.\n\n"
                 "Use 'Portfolio Only' to sort photos without processing.")
@@ -618,7 +655,6 @@ class PortfolioMakerApp:
         self.progress_bar.start(20)
 
         source = self.source_var.get().strip()
-        job_type = self.job_type_var.get()
         threshold = self._get_threshold()
         bbox = self._get_bbox()
         base_url = self.nodeodm_url_var.get().strip() or None
