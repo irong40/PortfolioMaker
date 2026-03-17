@@ -7,7 +7,7 @@
 
 ### Job Types
 
-- [ ] **JOB-01**: User can select from 6 job types (Construction Progress, Property Survey, Roof Inspection, Structures, Vegetation, Real Estate)
+- [ ] **JOB-01**: User can select from 7 job types (Construction Progress, Property Survey, Roof Inspection, Structures, Vegetation, Real Estate, Gaussian Splat)
 - [ ] **JOB-02**: Selected job type determines which photos are used (nadir only vs all)
 - [ ] **JOB-03**: Selected job type determines ODM processing options
 - [ ] **JOB-04**: Selected job type determines which report template is generated
@@ -39,6 +39,14 @@
 - [ ] **OUT-03**: Manifest.json written alongside outputs with full metadata
 - [ ] **OUT-04**: User can specify site name for folder naming and report branding
 
+### MipMap Integration
+
+- [ ] **MIP-01**: Gaussian Splat job type routes to MipMap Desktop instead of NodeODM
+- [ ] **MIP-02**: App launches MipMap task with optimized settings (resolution_level 3, mesh_decimate_ratio 0.5, non-essential outputs disabled)
+- [ ] **MIP-03**: App monitors MipMap task log for progress and completion
+- [ ] **MIP-04**: Gaussian Splat report template includes splat viewer embed or screenshot
+- [ ] **MIP-05**: GUI shows MipMap status indicator alongside NodeODM indicator
+
 ### GUI
 
 - [ ] **GUI-01**: GUI shows Photo Folder, Job Type, and Site Name before scan
@@ -59,11 +67,6 @@
 
 - **CHG-01**: Compare orthomosaics across visits for construction progress overlay
 - **CHG-02**: Volume change calculation between DSMs
-
-### MipMap Integration
-
-- **MIP-01**: Submit to MipMap Desktop as alternative engine
-- **MIP-02**: Gaussian Splat and OSGB output support
 
 ## Out of Scope
 
@@ -109,9 +112,15 @@
 | RPT-07 | Phase 4 | Pending |
 | RPT-08 | Phase 4 | Pending |
 
+| MIP-01 | Phase 6 | Pending |
+| MIP-02 | Phase 6 | Pending |
+| MIP-03 | Phase 6 | Pending |
+| MIP-04 | Phase 6 | Pending |
+| MIP-05 | Phase 6 | Pending |
+
 **Coverage:**
-- v2.0 requirements: 28 total
-- Mapped to phases: 28
+- v2.0 requirements: 33 total
+- Mapped to phases: 33
 - Unmapped: 0
 
 ---

@@ -18,6 +18,7 @@
 - [ ] **Phase 3: GUI Redesign** - Rebuild the Tkinter interface around the intent-first workflow
 - [ ] **Phase 4: Report Generator** - Branded ReportLab PDF reports for all 6 job types
 - [ ] **Phase 5: Integration Testing** - End-to-end validation of full workflow from photo folder to deliverable package
+- [ ] **Phase 6: MipMap + Gaussian Splats** - Add 7th job type routing to MipMap Desktop for Gaussian Splat generation
 
 ## Phase Details
 
@@ -85,11 +86,25 @@
   5. App starts cleanly and shows correct NodeODM status when NodeODM is both running and stopped
 **Plans**: TBD
 
+### Phase 6: MipMap + Gaussian Splats
+**Goal**: A 7th job type "Gaussian Splat" routes to MipMap Desktop instead of NodeODM, with optimized settings and a splat-specific report
+**Depends on**: Phase 1, Phase 2, Phase 3, Phase 4
+**Requirements**: MIP-01, MIP-02, MIP-03, MIP-04, MIP-05
+**Success Criteria** (what must be TRUE):
+  1. Selecting "Gaussian Splat" job type submits to MipMap Desktop (not NodeODM)
+  2. MipMap task uses resolution_level 3, mesh_decimate_ratio 0.5, and disables non-essential outputs to conserve VRAM
+  3. App monitors MipMap task log for progress updates and completion
+  4. Completed splat outputs (gs_ply, gs_sog_tiles) download to portfolio folder
+  5. Gaussian Splat report includes splat-specific sections and Sentinel branding
+  6. GUI shows MipMap status indicator in header alongside NodeODM indicator
+**Plans**: TBD
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
-(Phase 3 and Phase 4 can be parallelized if desired — both depend on Phase 2 only)
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
+(Phase 3 and Phase 4 can be parallelized — both depend on Phase 2 only)
+(Phase 6 depends on Phases 1-4 complete)
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
