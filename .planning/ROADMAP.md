@@ -97,12 +97,17 @@
   4. Completed splat outputs (gs_ply, gs_sog_tiles) download to portfolio folder
   5. Gaussian Splat report includes splat-specific sections and Sentinel branding
   6. GUI shows MipMap status indicator in header alongside NodeODM indicator
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — MipMap service module, gaussian_splat preset, and report template
+- [ ] 06-02-PLAN.md — Wire MipMap into portfolio service and GUI
+- [ ] 06-03-PLAN.md — Full integration verification and GUI checkpoint
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 (Phase 3 and Phase 4 can be parallelized — both depend on Phase 2 only)
 (Phase 6 depends on Phases 1-4 complete)
 
@@ -113,3 +118,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 3. GUI Redesign | 0/TBD | Not started | - |
 | 4. Report Generator | 0/TBD | Not started | - |
 | 5. Integration Testing | 0/TBD | Not started | - |
+| 6. MipMap + Gaussian Splats | 0/3 | Planned | - |
