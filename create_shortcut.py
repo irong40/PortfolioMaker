@@ -1,4 +1,4 @@
-"""Create a Windows desktop shortcut for Portfolio Maker."""
+"""Create a Windows desktop shortcut for Sortie."""
 
 import os
 import sys
@@ -12,20 +12,20 @@ except ImportError:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PYTHON_EXE = sys.executable.replace("python.exe", "pythonw.exe")
-TARGET_SCRIPT = SCRIPT_DIR / "portfolio_maker.pyw"
-ICON_FILE = SCRIPT_DIR / "portfolio_maker.ico"
+TARGET_SCRIPT = SCRIPT_DIR / "sortie.pyw"
+ICON_FILE = SCRIPT_DIR / "sortie.ico"
 
 
 def main():
     desktop = winshell.desktop()
-    shortcut_path = os.path.join(desktop, "Portfolio Maker.lnk")
+    shortcut_path = os.path.join(desktop, "Sortie.lnk")
 
     shell = Dispatch("WScript.Shell")
     shortcut = shell.CreateShortCut(shortcut_path)
     shortcut.Targetpath = PYTHON_EXE
     shortcut.Arguments = f'"{TARGET_SCRIPT}"'
     shortcut.WorkingDirectory = str(SCRIPT_DIR)
-    shortcut.Description = "Sentinel Portfolio Maker — Sort drone photos"
+    shortcut.Description = "Sortie — Sort and process drone photos"
     if ICON_FILE.exists():
         shortcut.IconLocation = str(ICON_FILE)
     shortcut.save()

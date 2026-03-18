@@ -1,8 +1,8 @@
 """
-Sentinel Portfolio Maker — Portfolio Service
+Sortie — Portfolio Service
 
 Orchestration layer: scan, filter, submit to NodeODM, download outputs.
-No GUI dependency — called by portfolio_maker.py or CLI.
+No GUI dependency — called by sortie.py or CLI.
 """
 
 import os

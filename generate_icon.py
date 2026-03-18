@@ -1,4 +1,4 @@
-"""Generate the Portfolio Maker application icon.
+"""Generate the Sortie application icon.
 
 Creates a multi-size .ico file with the Sentinel drone/grid motif.
 Run once: python generate_icon.py
@@ -113,7 +113,7 @@ def main():
 
     # Save .ico with all sizes
     images[-1].save(
-        "portfolio_maker.ico",
+        "sortie.ico",
         format="ICO",
         sizes=[(s, s) for s in sizes],
         append_images=images[:-1],
@@ -121,10 +121,10 @@ def main():
 
     # Also save a PNG for other uses
     png = draw_icon(512)
-    png.save("portfolio_maker.png", format="PNG")
+    png.save("sortie.png", format="PNG")
 
-    print(f"Created portfolio_maker.ico ({len(sizes)} sizes)")
-    print(f"Created portfolio_maker.png (512x512)")
+    print(f"Created sortie.ico ({len(sizes)} sizes)")
+    print(f"Created sortie.png (512x512)")
 
 
 if __name__ == "__main__":

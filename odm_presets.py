@@ -1,5 +1,5 @@
 """
-Sentinel Portfolio Maker — ODM Processing Presets
+Sortie — ODM Processing Presets
 
 Maps job types to NodeODM processing options, photo filters,
 download targets, and report templates.

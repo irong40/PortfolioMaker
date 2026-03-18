@@ -1,5 +1,5 @@
 """
-Sentinel Portfolio Maker — Photo Classifier
+Sortie — Photo Classifier
 
 Sorts drone photos into nadir/oblique folders based on gimbal pitch angle.
 Reuses EXIF/XMP extraction from the drone-pipeline (ingest.py, platform_detect.py).
@@ -141,19 +141,32 @@ class PhotoMeta:
 
 
 @dataclass
+class PanoramaSet:
+    """A group of source photos that form one panorama."""
+    folder: str
+    photo_count: int
+    photos: list = field(default_factory=list)  # list of file paths
+    stitched_path: str = ""  # set after stitching
+    stitch_error: str = ""   # set if stitching fails
+
+
+@dataclass
 class ClassificationResult:
     source_dir: str
     nadir_count: int = 0
     oblique_count: int = 0
     unknown_count: int = 0
+    panorama_count: int = 0
     total: int = 0
     pitch_min: float = None
     pitch_max: float = None
     platform: str = None
     photos: list = field(default_factory=list)
+    panorama_sets: list = field(default_factory=list)  # list of PanoramaSet
     nadir_dir: str = ""
     oblique_dir: str = ""
     unknown_dir: str = ""
+    panorama_dir: str = ""
     threshold: float = -70.0
     created_at: str = ""
     failed_transfers: list = field(default_factory=list)
@@ -189,6 +202,45 @@ def scan_photos(source_dir):
         if f.is_file() and f.suffix.lower() in PHOTO_EXTENSIONS:
             photos.append(f)
     return photos
+
+
+def scan_panoramas(source_dir):
+    """Detect panorama sets in a PANORAMA/ subfolder.
+
+    DJI drones store panorama source photos in:
+        source_dir/PANORAMA/<set_id>/PANO_*.JPG
+
+    Also checks the parent directory for a PANORAMA/ folder,
+    since DJI SD cards put PANORAMA/ alongside DJI_xxx/ photo folders.
+
+    Returns a list of PanoramaSet objects.
+    """
+    source = Path(source_dir)
+    pano_dir = source / "PANORAMA"
+    if not pano_dir.is_dir():
+        # Check parent — SD card layout: parent/DJI_xxx/ + parent/PANORAMA/
+        parent_pano = source.parent / "PANORAMA"
+        if parent_pano.is_dir():
+            pano_dir = parent_pano
+        else:
+            return []
+
+    sets = []
+    for subfolder in sorted(pano_dir.iterdir()):
+        if not subfolder.is_dir():
+            continue
+        photos = sorted({
+            f for f in subfolder.iterdir()
+            if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg"}
+        })
+        if photos:
+            sets.append(PanoramaSet(
+                folder=str(subfolder),
+                photo_count=len(photos),
+                photos=[str(p) for p in photos],
+            ))
+
+    return sets
 
 
 def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
@@ -262,6 +314,11 @@ def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
         result.pitch_min = min(pitches)
         result.pitch_max = max(pitches)
 
+    # Detect panorama sets
+    pano_sets = scan_panoramas(source_dir)
+    result.panorama_sets = pano_sets
+    result.panorama_count = len(pano_sets)
+
     return result
 
 
@@ -319,7 +376,79 @@ def sort_photos(result, copy=True, progress_callback=None):
     if result.failed_transfers:
         log.warning(f"{len(result.failed_transfers)} file(s) failed to transfer")
 
+    # Stitch panoramas if any detected
+    if result.panorama_sets:
+        panorama_out = source / "panorama"
+        panorama_out.mkdir(exist_ok=True)
+        result.panorama_dir = str(panorama_out)
+        stitch_panoramas(result.panorama_sets, str(panorama_out),
+                         progress_callback=progress_callback)
+
     return result
+
+
+def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
+    """Stitch each panorama set and save to output_dir.
+
+    Args:
+        panorama_sets: List of PanoramaSet objects
+        output_dir: Folder to save stitched panoramas
+        progress_callback: Optional callable(current, total, filename)
+    """
+    log = logging.getLogger(__name__)
+
+    try:
+        import cv2
+        cv2.ocl.setUseOpenCL(False)
+    except ImportError:
+        log.warning("OpenCV not installed — skipping panorama stitching")
+        for ps in panorama_sets:
+            ps.stitch_error = "OpenCV not installed"
+        return
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    for i, ps in enumerate(panorama_sets):
+        folder_name = Path(ps.folder).name
+        log.info(f"Stitching panorama {i + 1}/{len(panorama_sets)}: {folder_name} ({ps.photo_count} photos)")
+
+        images = []
+        for photo_path in ps.photos:
+            img = cv2.imread(photo_path)
+            if img is None:
+                continue
+            h, w = img.shape[:2]
+            if w > 2000:
+                scale = 2000 / w
+                img = cv2.resize(img, (int(w * scale), int(h * scale)))
+            images.append(img)
+
+        if len(images) < 2:
+            ps.stitch_error = f"Only {len(images)} readable images"
+            log.warning(f"  Skipping {folder_name}: {ps.stitch_error}")
+            continue
+
+        stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
+        status, pano = stitcher.stitch(images)
+
+        if status != cv2.Stitcher_OK:
+            errors = {
+                cv2.Stitcher_ERR_NEED_MORE_IMGS: "not enough overlap",
+                cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL: "homography failed",
+                cv2.Stitcher_ERR_CAMERA_PARAMS_ADJUST_FAIL: "camera params failed",
+            }
+            ps.stitch_error = errors.get(status, f"unknown error {status}")
+            log.warning(f"  Failed {folder_name}: {ps.stitch_error}")
+            continue
+
+        output_path = out / f"{folder_name}_panorama.jpg"
+        cv2.imwrite(str(output_path), pano, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        ps.stitched_path = str(output_path)
+        log.info(f"  Saved: {output_path.name} ({pano.shape[1]}x{pano.shape[0]})")
+
+        if progress_callback:
+            progress_callback(i + 1, len(panorama_sets), folder_name)
 
 
 def filter_photos(result, bbox=None, classification=None):
@@ -355,11 +484,13 @@ def filter_photos(result, bbox=None, classification=None):
         nadir_count=nadir,
         oblique_count=oblique,
         unknown_count=unknown,
+        panorama_count=result.panorama_count,
         total=len(filtered),
         pitch_min=min(pitches) if pitches else None,
         pitch_max=max(pitches) if pitches else None,
         platform=result.platform,
         photos=filtered,
+        panorama_sets=result.panorama_sets,
         threshold=result.threshold,
         created_at=result.created_at,
     )
@@ -419,7 +550,7 @@ def write_manifest(result, output_path=None):
         output_path = Path(result.source_dir) / "manifest.json"
 
     manifest = {
-        "portfolio_maker_version": "1.0",
+        "sortie_version": "1.0",
         "source_dir": result.source_dir,
         "created_at": result.created_at,
         "platform": result.platform,
@@ -429,6 +560,7 @@ def write_manifest(result, output_path=None):
             "nadir": result.nadir_count,
             "oblique": result.oblique_count,
             "unknown": result.unknown_count,
+            "panoramas": result.panorama_count,
         },
         "pitch_range": {
             "min": result.pitch_min,
@@ -444,7 +576,17 @@ def write_manifest(result, output_path=None):
             "nadir": result.nadir_dir,
             "oblique": result.oblique_dir,
             "unknown": result.unknown_dir,
+            "panorama": result.panorama_dir,
         },
+        "panoramas": [
+            {
+                "folder": ps.folder,
+                "photo_count": ps.photo_count,
+                "stitched_path": ps.stitched_path,
+                "stitch_error": ps.stitch_error,
+            }
+            for ps in result.panorama_sets
+        ],
         "photos": [
             {
                 "filename": p.filename,
@@ -470,7 +612,7 @@ def write_manifest(result, output_path=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Sentinel Portfolio Maker — Photo Classifier",
+        description="Sortie — Photo Classifier",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Sorts DJI drone photos into nadir (straight down) and oblique (angled) folders
@@ -541,6 +683,10 @@ Examples:
     log.info(f"Oblique:   {result.oblique_count}")
     if result.unknown_count:
         log.info(f"Unknown:   {result.unknown_count} (no pitch data)")
+    if result.panorama_count:
+        log.info(f"Panoramas: {result.panorama_count} sets")
+        for ps in result.panorama_sets:
+            log.info(f"  {Path(ps.folder).name}: {ps.photo_count} photos")
     if result.pitch_min is not None:
         log.info(f"Pitch:     {result.pitch_min:.1f} to {result.pitch_max:.1f} degrees")
     if result.gps_bounds:

@@ -1,5 +1,5 @@
 """
-Sentinel Portfolio Maker — MipMap Desktop Service
+Sortie — MipMap Desktop Service
 
 Drives MipMap Desktop's reconstruct_full_engine.exe CLI for Gaussian Splat
 generation.  Provides task JSON construction, engine launch, log monitoring,
@@ -12,7 +12,9 @@ write a task JSON, launch the engine subprocess, tail logs/log.txt for
 
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -58,10 +60,159 @@ def check_mipmap() -> bool:
     return engine_found and gs_dlls_found
 
 
+# ─── PHOTO METADATA EXTRACTION ───────────────────────────────────────────────
+
+def _extract_xmp_fields(filepath):
+    """Extract DJI XMP fields from a photo file."""
+    with open(filepath, "rb") as f:
+        data = f.read(500000)
+    start = data.find(b"<x:xmpmeta")
+    if start < 0:
+        return {}
+    end = data.find(b"</x:xmpmeta>", start) + len(b"</x:xmpmeta>")
+    xmp = data[start:end].decode("utf-8", errors="ignore")
+    return dict(re.findall(r'drone-dji:(\w+)="([^"]+)"', xmp))
+
+
+def _parse_dewarp_data(dewarp_str):
+    """Parse DJI DewarpData string into camera calibration parameters.
+
+    Format: 'date;fx,fy,cx_offset,cy_offset,k1,k2,p1,p2,k3'
+    Returns list of 10 floats: [fx, fy, cx, cy, k1, k2, p1, p2, k3, 0]
+    where cx/cy are absolute (offset + half image dimension, applied by caller).
+    """
+    parts = dewarp_str.split(";")
+    if len(parts) != 2:
+        return None
+    values = [float(v) for v in parts[1].split(",")]
+    if len(values) < 9:
+        return None
+    return values
+
+
+def _gimbal_to_orientation(pitch_deg, roll_deg, yaw_deg):
+    """Convert DJI gimbal angles to a 3x3 rotation matrix (row-major list).
+
+    MipMap expects a rotation matrix that transforms from camera to world.
+    DJI convention: pitch=-90 is nadir, yaw=heading, roll=bank.
+    """
+    p = math.radians(pitch_deg)
+    r = math.radians(roll_deg)
+    y = math.radians(yaw_deg)
+
+    cp, sp = math.cos(p), math.sin(p)
+    cr, sr = math.cos(r), math.sin(r)
+    cy, sy = math.cos(y), math.sin(y)
+
+    # ZYX rotation: R = Rz(yaw) * Ry(pitch) * Rx(roll)
+    return [
+        cy * cp,                        sy * cp,                        -sp,
+        cy * sp * sr - sy * cr,         sy * sp * sr + cy * cr,         cp * sr,
+        cy * sp * cr + sy * sr,         sy * sp * cr - cy * sr,         cp * cr,
+    ]
+
+
+def _extract_photo_metadata(photo_dir):
+    """Extract camera and image metadata from all photos in a directory.
+
+    Returns (camera_meta_data, image_meta_data) lists ready for MipMap task JSON.
+    """
+    from PIL import Image
+    from PIL.ExifTags import TAGS
+
+    photo_dir = Path(photo_dir)
+    photos = sorted(f for f in photo_dir.iterdir()
+                    if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg", ".dng", ".tif", ".tiff"})
+
+    if not photos:
+        return [], []
+
+    # Build camera meta from first photo (all same camera in a drone job)
+    first_xmp = _extract_xmp_fields(str(photos[0]))
+    dewarp = first_xmp.get("DewarpData", "")
+    calib = _parse_dewarp_data(dewarp)
+
+    img = Image.open(str(photos[0]))
+    w, h = img.size
+    exif = img.getexif()
+    focal_35mm = exif.get(41989, 24)  # FocalLengthIn35mmFilm tag
+
+    if calib and len(calib) >= 9:
+        # DewarpData gives offsets from center; convert to absolute pixel coords
+        # DJI DewarpData order: fx, fy, cx_off, cy_off, k1, k2, p1, p2, k3
+        # MipMap SDK order:     fx, fy, cx,     cy,     k1, k2, k3, p1, p2
+        fx, fy = calib[0], calib[1]
+        cx = calib[2] + w / 2.0
+        cy = calib[3] + h / 2.0
+        k1, k2, p1, p2, k3 = calib[4], calib[5], calib[6], calib[7], calib[8]
+        params = [fx, fy, cx, cy, k1, k2, k3, p1, p2]
+    else:
+        # Fallback: estimate from calibrated focal length
+        cal_fl = float(first_xmp.get("CalibratedFocalLength", w * 0.7))
+        params = [cal_fl, cal_fl, w / 2.0, h / 2.0, 0, 0, 0, 0, 0]
+
+    camera_meta = [{
+        "id": 1,
+        "meta_data": {
+            "projection_model": 0,
+            "camera_name": "Camera-1",
+            "width": w,
+            "height": h,
+            "parameters": params,
+            "constant_parameters": [],
+        },
+    }]
+
+    # Build image metadata for each photo
+    image_meta = []
+    for i, photo_path in enumerate(photos):
+        xmp = _extract_xmp_fields(str(photo_path))
+        if not xmp:
+            continue
+
+        lat = float(xmp.get("GpsLatitude", 0))
+        lon = float(xmp.get("GpsLongitude", 0))
+        alt = float(xmp.get("AbsoluteAltitude", 0))
+        rel_alt = float(xmp.get("RelativeAltitude", 0))
+
+        pitch = float(xmp.get("GimbalPitchDegree", -90))
+        roll = float(xmp.get("GimbalRollDegree", 0))
+        yaw = float(xmp.get("GimbalYawDegree", 0))
+
+        orientation = _gimbal_to_orientation(pitch, roll, yaw)
+
+        # RTK GPS gives cm-level accuracy vs standard GPS meter-level
+        gps_status = xmp.get("GpsStatus", "")
+        is_rtk = gps_status.upper() in ("RTK", "RTKFIXED", "RTK_FIXED")
+        pos_sigma = [0.03, 0.03, 0.06] if is_rtk else [2.0, 2.0, 5.0]
+
+        image_meta.append({
+            "id": i + 1,
+            "meta_data": {
+                "width": w,
+                "height": h,
+                "camera_id": 1,
+                "pos": [lon, lat, alt],
+                "pos_sigma": pos_sigma,
+                "orientation": orientation,
+                "relative_altitude": rel_alt,
+                "focal_length_in_35mm": focal_35mm,
+                "pre_calib_param": params[:9],
+                "dewarp_flag": False,
+            },
+            "path": str(photo_path),
+        })
+
+    log.info("Extracted metadata: %d images, camera %dx%d, focal=%.1f",
+             len(image_meta), w, h, params[0])
+    return camera_meta, image_meta
+
+
 # ─── TASK JSON BUILDER ────────────────────────────────────────────────────────
 
 def build_splat_task_json(
     working_dir: Path,
+    photo_dir: str = None,
     resolution_level: int = 3,
     mesh_decimate_ratio: float = 0.5,
 ) -> dict:
@@ -69,6 +220,7 @@ def build_splat_task_json(
 
     Args:
         working_dir: Directory where MipMap will write outputs.
+        photo_dir: Directory containing photos. If None, uses working_dir/photos.
         resolution_level: Processing resolution (1=highest, 5=lowest). Default 3.
         mesh_decimate_ratio: Mesh simplification ratio (0-1). Default 0.5.
 
@@ -77,6 +229,11 @@ def build_splat_task_json(
     """
     appdata = os.environ.get("APPDATA", "")
     extension_base = os.path.join(appdata, "mipmap-desktop", "extentions")
+
+    if photo_dir is None:
+        photo_dir = str(Path(working_dir) / "photos")
+
+    camera_meta, image_meta = _extract_photo_metadata(photo_dir)
 
     return {
         "license_id": 9000,
@@ -125,8 +282,8 @@ def build_splat_task_json(
         "mesh_decimate_ratio": mesh_decimate_ratio,
         "remove_small_islands": False,
         "dom_gsd": 0,
-        "camera_meta_data": [],
-        "image_meta_data": [],
+        "camera_meta_data": camera_meta,
+        "image_meta_data": image_meta,
     }
 
 
@@ -229,9 +386,10 @@ def run_mipmap_pipeline(
 
     log_path = logs_dir / "log.txt"
 
-    # Build task JSON
+    # Build task JSON with real photo metadata
     task_json = build_splat_task_json(
         working_dir,
+        photo_dir=photo_dir,
         resolution_level=resolution_level,
         mesh_decimate_ratio=mesh_decimate_ratio,
     )

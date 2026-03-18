@@ -1,5 +1,5 @@
 """
-Sentinel Portfolio Maker — Report Generator
+Sortie — Report Generator
 
 Generates branded PDF reports per job type using ReportLab.
 Follows the pattern established by vegetation_report.py in drone-pipeline.
@@ -369,7 +369,7 @@ def _build_methodology(elements, styles, data):
         styles["SentinelBody"],
     ))
     elements.append(Paragraph(
-        "This report was generated automatically by Sentinel Portfolio Maker. "
+        "This report was generated automatically by Sortie."
         "All measurements are approximate and derived from photogrammetric "
         "reconstruction. For survey-grade accuracy, ground control points "
         "and professional survey equipment should be used.",

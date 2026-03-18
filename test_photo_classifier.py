@@ -207,7 +207,7 @@ class TestWriteManifest:
         assert data["summary"]["nadir"] == 1
         assert data["photos"][0]["filename"] == "a.jpg"
         assert data["photos"][0]["pitch"] == -90.0
-        assert data["portfolio_maker_version"] == "1.0"
+        assert data["sortie_version"] == "1.0"
 
     def test_includes_gps_bounds(self, tmp_path):
         photos = [
