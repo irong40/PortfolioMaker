@@ -580,13 +580,20 @@ class PortfolioMakerApp:
                 try:
                     vals.append(float(raw))
                 except ValueError:
+                    messagebox.showwarning("Invalid BBox",
+                                           f"'{raw}' is not a valid number for {name.replace('_', ' ')}.")
                     return None
             else:
                 vals.append(None)
         if not filled:
             return None
         if len(filled) != 4:
-            return None
+            missing = [n.replace("_", " ") for n in ["min_lat", "max_lat", "min_lon", "max_lon"]
+                       if n not in filled]
+            messagebox.showwarning("Incomplete BBox",
+                                   f"All 4 bbox fields are required. Missing: {', '.join(missing)}.\n"
+                                   "Clear all fields to disable area filtering.")
+            return "invalid"
         return tuple(vals)
 
     # ── UI Helpers ──
@@ -781,6 +788,9 @@ class PortfolioMakerApp:
         source = self.source_var.get().strip()
         threshold = self._get_threshold()
         bbox = self._get_bbox()
+        if bbox == "invalid":
+            self._set_running(False)
+            return
         base_url = self.nodeodm_url_var.get().strip() or None
         msg_queue = queue.Queue()
 
@@ -845,6 +855,9 @@ class PortfolioMakerApp:
         job_type = self.job_type_var.get()
         threshold = self._get_threshold()
         bbox = self._get_bbox()
+        if bbox == "invalid":
+            self._set_running(False)
+            return
         msg_queue = queue.Queue()
 
         def run():

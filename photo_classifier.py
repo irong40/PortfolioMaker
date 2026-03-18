@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 # Add drone-pipeline to path so we can reuse its battle-tested EXIF logic
 
 DRONE_PIPELINE_DIR = Path(
-    os.environ.get("DRONE_PIPELINE_DIR", r"C:\Users\redle.SOULAAN\Documents\drone-pipeline")
+    os.environ.get("DRONE_PIPELINE_DIR",
+                   Path.home() / "Documents" / "drone-pipeline")
 )
 if DRONE_PIPELINE_DIR.exists() and str(DRONE_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(DRONE_PIPELINE_DIR))
@@ -65,7 +66,7 @@ def _fallback_extract_xmp_gimbal(filepath):
             "absolute_altitude": float(fields.get("AbsoluteAltitude", 0)),
         }
     except (OSError, ValueError, KeyError) as e:
-        log.debug(f"XMP extraction failed for {filepath}: {e}")
+        log.warning(f"XMP extraction failed for {filepath}: {e}")
         return None
 
 
@@ -94,7 +95,7 @@ def _fallback_extract_gps(filepath):
         alt = float(gps_info.get(6, 0))
         return [lon, lat, alt]
     except (OSError, KeyError, ValueError, TypeError) as e:
-        log.debug(f"GPS extraction failed for {filepath}: {e}")
+        log.warning(f"GPS extraction failed for {filepath}: {e}")
         return None
 
 

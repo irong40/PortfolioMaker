@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest>=8.0.0
+winshell>=0.6; sys_platform == "win32"
+pywin32>=300; sys_platform == "win32"

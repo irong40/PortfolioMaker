@@ -15,7 +15,7 @@ DARK = "#1A0A2E"
 
 
 def draw_icon(size):
-    """Draw the Portfolio Maker icon at a given size."""
+    """Draw the Sortie icon at a given size."""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
