@@ -8,15 +8,21 @@ No GUI dependency — called by sortie.py or CLI.
 import os
 import json
 import logging
-import requests
 from pathlib import Path
 from datetime import datetime, timezone
 
 from photo_classifier import (
     classify_photos, filter_photos, export_photos, write_manifest,
+    stitch_panoramas,
 )
 from odm_presets import get_preset
 from mipmap_service import run_mipmap_pipeline, copy_splat_outputs, check_mipmap
+from sentinel_core.nodeodm import (
+    check_nodeodm as _check_nodeodm,
+    submit_task,
+    poll_task,
+    download_outputs as _download_outputs,
+)
 
 PORTFOLIO_ROOT = os.environ.get("PORTFOLIO_ROOT", r"E:\Portfolio")
 NODEODM_URL = os.environ.get("NODEODM_URL", "http://localhost:3000")
@@ -24,13 +30,7 @@ NODEODM_URL = os.environ.get("NODEODM_URL", "http://localhost:3000")
 
 def check_nodeodm(base_url=None):
     """Check if NodeODM is reachable. Returns server info dict or None."""
-    url = base_url or NODEODM_URL
-    try:
-        resp = requests.get(f"{url}/info", timeout=5)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return None
+    return _check_nodeodm(base_url or NODEODM_URL)
 
 
 def scan_for_job(classification_result, preset):
@@ -49,14 +49,17 @@ def scan_for_job(classification_result, preset):
     return classification_result
 
 
-def build_output_dir(site_name, date_str=None):
+def build_output_dir(site_name, date_str=None, job_type=None):
     """Build the output directory path for a portfolio job.
 
-    Returns: str path like E:\\Portfolio\\MallTest\\2026-03-16\\
+    Returns: str path like E:\\Portfolio\\MallTest\\2026-03-16\\property_survey\\
     """
     if date_str is None:
         date_str = datetime.now().strftime("%Y-%m-%d")
-    return str(Path(PORTFOLIO_ROOT) / site_name / date_str)
+    parts = [PORTFOLIO_ROOT, site_name, date_str]
+    if job_type:
+        parts.append(job_type)
+    return str(Path(*parts))
 
 
 def write_site_info(output_dir, site_name, job_type):
@@ -91,36 +94,35 @@ def write_site_info(output_dir, site_name, job_type):
 
 
 def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
-                       base_url=None, poll_interval=30, max_hours=6):
+                       base_url=None, poll_interval=30, max_hours=6,
+                       progress_callback=None):
     """Submit photos to NodeODM and poll until complete.
-
-    Uses photogrammetry_submit.py functions from drone-pipeline.
 
     Returns:
         (task_uuid, task_info) on success, (None, error_msg) on failure.
     """
-    log = logging.getLogger(__name__)
     url = base_url or NODEODM_URL
-
-    try:
-        from photogrammetry_submit import submit_task, poll_task
-    except ImportError:
-        return None, "drone-pipeline not available — cannot submit to NodeODM"
 
     task_uuid = submit_task(url, photo_paths, options=odm_options, name=task_name)
     if not task_uuid:
         return None, "Task submission failed"
 
-    result = poll_task(url, task_uuid, poll_interval=poll_interval, max_hours=max_hours)
-    if not result:
+    info = poll_task(url, task_uuid, poll_interval=poll_interval,
+                     max_hours=max_hours, progress_callback=progress_callback)
+
+    if info is None:
         return None, "Task timed out"
 
-    status_code = result.get("status", {}).get("code", -1)
-    if status_code != 40:
-        error = result.get("status", {}).get("errorMessage", "unknown")
+    status_code = info.get("status", {}).get("code", -1)
+    if status_code == 40:
+        return task_uuid, info
+    if status_code == 30:
+        error = info.get("status", {}).get("errorMessage", "unknown")
         return None, f"Task failed: {error}"
+    if status_code == 50:
+        return None, "Task was canceled"
 
-    return task_uuid, result
+    return None, f"Unexpected status: {status_code}"
 
 
 def download_outputs(task_uuid, output_dir, download_list, base_url=None):
@@ -129,37 +131,13 @@ def download_outputs(task_uuid, output_dir, download_list, base_url=None):
     Returns:
         Dict of {asset_name: local_path} for successful downloads.
     """
-    log = logging.getLogger(__name__)
     url = base_url or NODEODM_URL
-    os.makedirs(output_dir, exist_ok=True)
-    downloaded = {}
-
-    for asset_name in download_list:
-        asset_url = f"{url}/task/{task_uuid}/download/{asset_name}"
-        local_path = os.path.join(output_dir, asset_name)
-
-        try:
-            resp = requests.get(asset_url, stream=True, timeout=30)
-            if resp.status_code == 200:
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                with open(local_path, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                size_mb = os.path.getsize(local_path) / (1024 * 1024)
-                log.info(f"Downloaded: {asset_name} ({size_mb:.1f} MB)")
-                downloaded[asset_name] = local_path
-            elif resp.status_code == 404:
-                log.info(f"Not available: {asset_name}")
-            else:
-                log.warning(f"Download failed: {asset_name} HTTP {resp.status_code}")
-        except requests.RequestException as e:
-            log.warning(f"Download failed: {asset_name}: {e}")
-
-    return downloaded
+    return _download_outputs(url, task_uuid, output_dir, download_list=download_list)
 
 
 def process_job(source_dir, job_type, site_name, threshold=-70.0,
-                bbox=None, base_url=None, progress_callback=None):
+                bbox=None, base_url=None, progress_callback=None,
+                output_dir=None):
     """Full portfolio job: scan → filter → submit → download.
 
     This is the main entry point called by the GUI or CLI.
@@ -202,7 +180,8 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
 
     # 3. Build output dir
     date_str = datetime.now().strftime("%Y-%m-%d")
-    output_dir = build_output_dir(site_name, date_str)
+    if not output_dir:
+        output_dir = build_output_dir(site_name, date_str, job_type)
     os.makedirs(output_dir, exist_ok=True)
 
     # 4. Write site info
@@ -245,8 +224,12 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         task_name = f"portfolio-{site_name[:20]}-{date_str}"
         notify("submit", f"Submitting {len(photo_paths)} photos to NodeODM")
 
+        def on_nodeodm_progress(pct):
+            notify("nodeodm_progress", f"{pct:.0f}")
+
         task_uuid, result = submit_to_nodeodm(
             photo_paths, preset["odm_options"], task_name=task_name, base_url=base_url,
+            progress_callback=on_nodeodm_progress,
         )
 
         if task_uuid is None:
@@ -258,10 +241,22 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         notify("download", "Downloading outputs")
         downloaded = download_outputs(task_uuid, output_dir, preset["downloads"], base_url=base_url)
 
-    # 7. Write manifest
+    # 7. Stitch panoramas if detected
+    if classification.panorama_sets:
+        pano_dir = str(Path(output_dir) / "panoramas")
+        notify("panorama", f"Stitching {len(classification.panorama_sets)} panorama(s)")
+        stitch_panoramas(classification.panorama_sets, pano_dir)
+        stitched = [ps for ps in classification.panorama_sets if ps.stitched_path]
+        failed = [ps for ps in classification.panorama_sets if ps.stitch_error]
+        if stitched:
+            notify("panorama", f"{len(stitched)} panorama(s) stitched")
+        if failed:
+            notify("warning", f"{len(failed)} panorama(s) failed to stitch")
+
+    # 8. Write manifest
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # 8. Generate report
+    # 9. Generate report
     report_result = None
     try:
         from report_generator import generate_report
@@ -305,7 +300,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
 
 
 def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
-                    bbox=None, progress_callback=None):
+                    bbox=None, progress_callback=None, output_dir=None):
     """Local sort only — no NodeODM. For portfolio photo organization.
 
     Returns:
@@ -333,13 +328,27 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
     notify("sort", f"Sorting {working_set.total} photos locally")
 
     date_str = datetime.now().strftime("%Y-%m-%d")
-    output_dir = build_output_dir(site_name, date_str)
+    if not output_dir:
+        output_dir = build_output_dir(site_name, date_str, job_type)
     os.makedirs(output_dir, exist_ok=True)
 
     write_site_info(output_dir, site_name, job_type)
 
     # Export filtered photos to output_dir (not sort into source folder)
     export_photos(working_set, output_dir, copy=True)
+
+    # Stitch panoramas if detected
+    if classification.panorama_sets:
+        pano_dir = str(Path(output_dir) / "panoramas")
+        notify("panorama", f"Stitching {len(classification.panorama_sets)} panorama(s)")
+        stitch_panoramas(classification.panorama_sets, pano_dir)
+        stitched = [ps for ps in classification.panorama_sets if ps.stitched_path]
+        failed = [ps for ps in classification.panorama_sets if ps.stitch_error]
+        if stitched:
+            notify("panorama", f"{len(stitched)} panorama(s) stitched")
+        if failed:
+            notify("warning", f"{len(failed)} panorama(s) failed to stitch")
+
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
     # Generate report even in portfolio-only mode

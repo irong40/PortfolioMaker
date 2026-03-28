@@ -12,7 +12,6 @@ write a task JSON, launch the engine subprocess, tail logs/log.txt for
 
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -62,16 +61,12 @@ def check_mipmap() -> bool:
 
 # ─── PHOTO METADATA EXTRACTION ───────────────────────────────────────────────
 
+from sentinel_core.metadata import extract_xmp_fields as _extract_xmp_fields_raw
+
+
 def _extract_xmp_fields(filepath):
-    """Extract DJI XMP fields from a photo file."""
-    with open(filepath, "rb") as f:
-        data = f.read(500000)
-    start = data.find(b"<x:xmpmeta")
-    if start < 0:
-        return {}
-    end = data.find(b"</x:xmpmeta>", start) + len(b"</x:xmpmeta>")
-    xmp = data[start:end].decode("utf-8", errors="ignore")
-    return dict(re.findall(r'drone-dji:(\w+)="([^"]+)"', xmp))
+    """Extract DJI XMP fields from a photo file. Returns dict or empty dict."""
+    return _extract_xmp_fields_raw(filepath) or {}
 
 
 def _parse_dewarp_data(dewarp_str):
@@ -90,26 +85,7 @@ def _parse_dewarp_data(dewarp_str):
     return values
 
 
-def _gimbal_to_orientation(pitch_deg, roll_deg, yaw_deg):
-    """Convert DJI gimbal angles to a 3x3 rotation matrix (row-major list).
-
-    MipMap expects a rotation matrix that transforms from camera to world.
-    DJI convention: pitch=-90 is nadir, yaw=heading, roll=bank.
-    """
-    p = math.radians(pitch_deg)
-    r = math.radians(roll_deg)
-    y = math.radians(yaw_deg)
-
-    cp, sp = math.cos(p), math.sin(p)
-    cr, sr = math.cos(r), math.sin(r)
-    cy, sy = math.cos(y), math.sin(y)
-
-    # ZYX rotation: R = Rz(yaw) * Ry(pitch) * Rx(roll)
-    return [
-        cy * cp,                        sy * cp,                        -sp,
-        cy * sp * sr - sy * cr,         sy * sp * sr + cy * cr,         cp * sr,
-        cy * sp * cr + sy * sr,         sy * sp * cr - cy * sr,         cp * cr,
-    ]
+from sentinel_core.metadata import gimbal_to_orientation as _gimbal_to_orientation
 
 
 def _extract_photo_metadata(photo_dir):

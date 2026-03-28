@@ -27,8 +27,19 @@ class TestCheckMipmap:
             assert check_mipmap() is False
 
 
+MOCK_CAMERA_META = [{"id": 1, "meta_data": {"projection_model": 0, "camera_name": "Camera-1",
+                     "width": 4000, "height": 3000, "parameters": [2800, 2800, 2000, 1500, 0, 0, 0, 0, 0],
+                     "constant_parameters": []}}]
+MOCK_IMAGE_META = [{"id": 1, "meta_data": {"width": 4000, "height": 3000, "camera_id": 1,
+                    "pos": [-76.3, 36.8, 50.0], "pos_sigma": [2.0, 2.0, 5.0],
+                    "orientation": [1, 0, 0, 0, 1, 0, 0, 0, 1], "relative_altitude": 50.0,
+                    "focal_length_in_35mm": 24, "pre_calib_param": [2800, 2800, 2000, 1500, 0, 0, 0, 0, 0],
+                    "dewarp_flag": False}, "path": "photo_001.jpg"}]
+
+
 class TestBuildSplatTaskJson:
-    def test_build_splat_task_json_defaults(self):
+    @patch("mipmap_service._extract_photo_metadata", return_value=(MOCK_CAMERA_META, MOCK_IMAGE_META))
+    def test_build_splat_task_json_defaults(self, mock_meta):
         """build_splat_task_json returns dict with correct default settings."""
         from mipmap_service import build_splat_task_json
         working_dir = Path("C:/tmp/test_work")
@@ -45,13 +56,15 @@ class TestBuildSplatTaskJson:
             ):
                 assert val is False, f"{key} should be False, got {val}"
 
-    def test_build_splat_task_json_custom(self):
+    @patch("mipmap_service._extract_photo_metadata", return_value=(MOCK_CAMERA_META, MOCK_IMAGE_META))
+    def test_build_splat_task_json_custom(self, mock_meta):
         """build_splat_task_json(resolution_level=2) overrides default."""
         from mipmap_service import build_splat_task_json
         result = build_splat_task_json(Path("C:/tmp/work"), resolution_level=2)
         assert result["resolution_level"] == 2
 
-    def test_build_splat_task_json_extension_paths(self):
+    @patch("mipmap_service._extract_photo_metadata", return_value=(MOCK_CAMERA_META, MOCK_IMAGE_META))
+    def test_build_splat_task_json_extension_paths(self, mock_meta):
         """extension_paths derived from %APPDATA% not hardcoded username."""
         from mipmap_service import build_splat_task_json
         with patch.dict(os.environ, {"APPDATA": "C:\\Users\\testuser\\AppData\\Roaming"}):
@@ -60,7 +73,8 @@ class TestBuildSplatTaskJson:
                 assert "redle" not in ext_path.lower(), "Should not contain hardcoded username"
                 assert "testuser" in ext_path, "Should use APPDATA env var"
 
-    def test_build_splat_task_json_working_dir(self):
+    @patch("mipmap_service._extract_photo_metadata", return_value=(MOCK_CAMERA_META, MOCK_IMAGE_META))
+    def test_build_splat_task_json_working_dir(self, mock_meta):
         """working_dir set to provided path as string."""
         from mipmap_service import build_splat_task_json
         wd = Path("D:/Portfolio/TestSite/2026-03-17/mipmap_work")

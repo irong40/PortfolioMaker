@@ -42,16 +42,23 @@ def _photo(tmp_path, name, pitch, classification):
 
 
 class TestCheckNodeodm:
-    @patch("portfolio_service.requests.get")
-    def test_reachable(self, mock_get):
-        mock_get.return_value = MagicMock(status_code=200)
-        mock_get.return_value.json.return_value = {"version": "2.0", "taskQueueCount": 0}
+    @patch("sentinel_core.nodeodm._get_requests")
+    def test_reachable(self, mock_get_requests):
+        mock_requests = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"version": "2.0", "taskQueueCount": 0}
+        mock_requests.get.return_value = mock_resp
+        mock_get_requests.return_value = mock_requests
         result = check_nodeodm("http://localhost:3000")
         assert result is not None
         assert result["version"] == "2.0"
 
-    @patch("portfolio_service.requests.get", side_effect=Exception("refused"))
-    def test_unreachable(self, mock_get):
+    @patch("sentinel_core.nodeodm._get_requests")
+    def test_unreachable(self, mock_get_requests):
+        mock_requests = MagicMock()
+        mock_requests.RequestException = Exception
+        mock_requests.get.side_effect = Exception("refused")
+        mock_get_requests.return_value = mock_requests
         result = check_nodeodm("http://localhost:3000")
         assert result is None
 

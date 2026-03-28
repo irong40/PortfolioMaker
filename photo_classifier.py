@@ -2,7 +2,7 @@
 Sortie — Photo Classifier
 
 Sorts drone photos into nadir/oblique folders based on gimbal pitch angle.
-Reuses EXIF/XMP extraction from the drone-pipeline (ingest.py, platform_detect.py).
+Uses sentinel-core for EXIF/XMP extraction and platform detection.
 
 This module contains the core logic — no GUI dependency.
 Can be used standalone via CLI or called from the Tkinter app.
@@ -24,107 +24,32 @@ from pathlib import Path
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 
-# ─── DRONE-PIPELINE IMPORTS ─────────────────────────────────────────────────
-# Add drone-pipeline to path so we can reuse its battle-tested EXIF logic
+# ─── SENTINEL-CORE IMPORTS ──────────────────────────────────────────────────
 
-DRONE_PIPELINE_DIR = Path(
-    os.environ.get("DRONE_PIPELINE_DIR",
-                   Path.home() / "Documents" / "drone-pipeline")
-)
-if DRONE_PIPELINE_DIR.exists() and str(DRONE_PIPELINE_DIR) not in sys.path:
-    sys.path.insert(0, str(DRONE_PIPELINE_DIR))
+from sentinel_core.metadata import extract_gps_from_exif, extract_xmp_gimbal
+from sentinel_core.platform import detect_platform_from_file
 
-try:
-    from ingest import extract_gps_from_exif, extract_xmp_gimbal
-    from platform_detect import detect_platform_from_file
-    PIPELINE_AVAILABLE = True
-except ImportError:
-    PIPELINE_AVAILABLE = False
+PIPELINE_AVAILABLE = True  # sentinel-core is always installed
 
-# ─── FALLBACK XMP EXTRACTION ────────────────────────────────────────────────
-# If drone-pipeline isn't available, use a minimal local implementation
-
-import re
-
-def _fallback_extract_xmp_gimbal(filepath):
-    """Minimal XMP gimbal extraction — used only if drone-pipeline not on path."""
-    log = logging.getLogger(__name__)
-    try:
-        with open(filepath, "rb") as f:
-            data = f.read(500000)
-        start = data.find(b"<x:xmpmeta")
-        if start < 0:
-            return None
-        end = data.find(b"</x:xmpmeta>", start) + len(b"</x:xmpmeta>")
-        xmp = data[start:end].decode("utf-8", errors="ignore")
-        fields = dict(re.findall(r'drone-dji:(\w+)="([^"]+)"', xmp))
-        return {
-            "pitch": float(fields.get("GimbalPitchDegree", 0)),
-            "roll": float(fields.get("GimbalRollDegree", 0)),
-            "yaw": float(fields.get("GimbalYawDegree", 0)),
-            "relative_altitude": float(fields.get("RelativeAltitude", 0)),
-            "absolute_altitude": float(fields.get("AbsoluteAltitude", 0)),
-        }
-    except (OSError, ValueError, KeyError) as e:
-        log.warning(f"XMP extraction failed for {filepath}: {e}")
-        return None
-
-
-def _fallback_extract_gps(filepath):
-    """Minimal GPS extraction — used only if drone-pipeline not on path."""
-    log = logging.getLogger(__name__)
-    try:
-        from PIL import Image
-        img = Image.open(filepath)
-        exif = img.getexif()
-        if not exif:
-            return None
-        gps_info = exif.get_ifd(0x8825)
-        if not gps_info:
-            return None
-
-        def dms_to_decimal(dms, ref):
-            d, m, s = float(dms[0]), float(dms[1]), float(dms[2])
-            dec = d + m / 60 + s / 3600
-            if ref in ("S", "W"):
-                dec = -dec
-            return dec
-
-        lat = dms_to_decimal(gps_info[2], gps_info[1])
-        lon = dms_to_decimal(gps_info[4], gps_info[3])
-        alt = float(gps_info.get(6, 0))
-        return [lon, lat, alt]
-    except (OSError, KeyError, ValueError, TypeError) as e:
-        log.warning(f"GPS extraction failed for {filepath}: {e}")
-        return None
-
-
-# ─── UNIFIED INTERFACE ──────────────────────────────────────────────────────
 
 def get_gimbal_data(filepath):
-    """Extract gimbal pitch/roll/yaw from a photo. Uses drone-pipeline if available."""
-    if PIPELINE_AVAILABLE:
-        return extract_xmp_gimbal(filepath)
-    return _fallback_extract_xmp_gimbal(filepath)
+    """Extract gimbal pitch/roll/yaw from a photo."""
+    return extract_xmp_gimbal(filepath)
 
 
 def get_gps_data(filepath):
-    """Extract GPS [lon, lat, alt] from a photo. Uses drone-pipeline if available."""
-    if PIPELINE_AVAILABLE:
-        return extract_gps_from_exif(filepath)
-    return _fallback_extract_gps(filepath)
+    """Extract GPS [lon, lat, alt] from a photo."""
+    return extract_gps_from_exif(filepath)
 
 
 def get_platform(filepath):
     """Detect drone platform. Returns (platform, method) or (None, None)."""
-    if PIPELINE_AVAILABLE:
-        return detect_platform_from_file(filepath)
-    return None, None
+    return detect_platform_from_file(filepath)
 
 
 # ─── CLASSIFICATION ─────────────────────────────────────────────────────────
 
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".dng", ".tif", ".tiff"}
+from sentinel_core.constants import PHOTO_EXTENSIONS
 
 @dataclass
 class PhotoMeta:
@@ -661,7 +586,7 @@ Examples:
     if not os.path.isdir(source):
         sys.exit(f"Error: Directory not found: {source}")
 
-    log.info(f"Pipeline modules: {'loaded from drone-pipeline' if PIPELINE_AVAILABLE else 'using fallback'}")
+    log.info("Pipeline modules: sentinel-core")
     log.info(f"Scanning: {source}")
     log.info(f"Threshold: {args.threshold} degrees (nadir = -95 to {args.threshold})")
     log.info("")

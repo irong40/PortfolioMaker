@@ -30,6 +30,7 @@ from portfolio_service import (
     check_nodeodm, scan_for_job, process_job, portfolio_only, PORTFOLIO_ROOT,
 )
 from mipmap_service import check_mipmap
+from ppk_service import detect_rinex, run_ppk_correction
 
 # ─── SETTINGS PERSISTENCE ────────────────────────────────────────────────────
 
@@ -39,6 +40,7 @@ def load_settings():
     """Load saved settings from disk. Returns dict with defaults for missing keys."""
     defaults = {
         "source_dir": "",
+        "output_dir": "",
         "job_type": "construction_progress",
         "site_name": "",
         "threshold": "-70",
@@ -138,11 +140,14 @@ class PortfolioMakerApp:
         self._running = False
         self._nodeodm_ok = False
         self._mipmap_ok = False
+        self._ppk_rinex = None
+        self._ppk_corrected = False
         self._settings = load_settings()
 
         configure_styles()
         self._build_header()
         self._build_input_section()
+        self._build_ppk_banner()
         self._build_scan_button()
         self._build_results_section()
         self._build_advanced_section()
@@ -154,15 +159,21 @@ class PortfolioMakerApp:
         self._apply_settings()
         self._center_window()
 
-        # Hide results and actions until scan
+        # Hide results, actions, and PPK banner until needed
         self._results_frame.pack_forget()
         self._action_frame.pack_forget()
+        self._ppk_frame.pack_forget()
 
         # Save settings on close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Check NodeODM in background
         threading.Thread(target=self._check_nodeodm_bg, daemon=True).start()
+
+        # Check for PPK data if a source folder is already set
+        saved_source = self._settings.get("source_dir", "")
+        if saved_source and os.path.isdir(saved_source):
+            self._check_ppk_data(saved_source)
 
     def _center_window(self):
         saved_geo = self._settings.get("window_geometry", "")
@@ -179,6 +190,8 @@ class PortfolioMakerApp:
         s = self._settings
         if s.get("source_dir"):
             self.source_var.set(s["source_dir"])
+        if s.get("output_dir"):
+            self.output_var.set(s["output_dir"])
         if s.get("job_type"):
             self.job_type_var.set(s["job_type"])
         if s.get("site_name"):
@@ -192,6 +205,7 @@ class PortfolioMakerApp:
         """Collect current UI state into a settings dict."""
         return {
             "source_dir": self.source_var.get(),
+            "output_dir": self.output_var.get(),
             "job_type": self.job_type_var.get(),
             "site_name": self.site_name_var.get(),
             "threshold": self.threshold_var.get(),
@@ -270,6 +284,19 @@ class PortfolioMakerApp:
         ttk.Button(row, text="Browse...", command=self._browse_source,
                    style="Secondary.TButton").pack(side="left", padx=(6, 0))
 
+        # Output folder (optional override — defaults to E:\Portfolio\...)
+        out_frame = ttk.LabelFrame(self._content, text="Output Folder (optional)", padding=10)
+        out_frame.pack(fill="x", pady=(0, 8))
+
+        out_row = ttk.Frame(out_frame)
+        out_row.pack(fill="x")
+        self.output_var = tk.StringVar()
+        ttk.Entry(out_row, textvariable=self.output_var).pack(side="left", fill="x", expand=True)
+        ttk.Button(out_row, text="Browse...", command=self._browse_output,
+                   style="Secondary.TButton").pack(side="left", padx=(6, 0))
+        ttk.Label(out_frame, text=f"Leave blank to use default: {PORTFOLIO_ROOT}\\<site>\\<date>\\<job>",
+                  font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(anchor="w", pady=(4, 0))
+
         # Job type + site name side by side
         job_frame = ttk.LabelFrame(self._content, text="Job Configuration", padding=10)
         job_frame.pack(fill="x", pady=(0, 8))
@@ -302,6 +329,134 @@ class PortfolioMakerApp:
                   font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(anchor="w", pady=(4, 0))
         self.job_type_var.trace_add("write", self._update_job_desc)
         self._update_job_desc()
+
+    # ── Build: PPK Banner ──
+
+    def _build_ppk_banner(self):
+        self._ppk_frame = tk.Frame(self._content, bg="#FFF3CD", padx=12, pady=10,
+                                    highlightbackground="#FFEEBA", highlightthickness=1)
+        self._ppk_frame.pack(fill="x", pady=(0, 8))
+
+        top_row = tk.Frame(self._ppk_frame, bg="#FFF3CD")
+        top_row.pack(fill="x")
+
+        tk.Label(top_row, text="PPK Data Detected",
+                 font=(FONT_FAMILY, 10, "bold"), fg="#856404",
+                 bg="#FFF3CD").pack(side="left")
+
+        self._ppk_status_label = tk.Label(top_row, text="",
+                                           font=(FONT_FAMILY, 8), fg="#856404",
+                                           bg="#FFF3CD")
+        self._ppk_status_label.pack(side="right")
+
+        self._ppk_detail_var = tk.StringVar()
+        tk.Label(self._ppk_frame, textvariable=self._ppk_detail_var,
+                 font=(FONT_FAMILY, 9), fg="#856404", bg="#FFF3CD",
+                 wraplength=700, justify="left").pack(anchor="w", pady=(4, 6))
+
+        btn_row = tk.Frame(self._ppk_frame, bg="#FFF3CD")
+        btn_row.pack(fill="x")
+
+        self._ppk_correct_btn = ttk.Button(
+            btn_row, text="Run PPK Correction",
+            command=self._on_ppk_correct, style="Accent.TButton")
+        self._ppk_correct_btn.pack(side="left")
+
+        self._ppk_skip_btn = ttk.Button(
+            btn_row, text="Skip (use raw GPS)",
+            command=self._on_ppk_skip, style="Secondary.TButton")
+        self._ppk_skip_btn.pack(side="left", padx=(8, 0))
+
+        self._ppk_progress_var = tk.StringVar()
+        tk.Label(self._ppk_frame, textvariable=self._ppk_progress_var,
+                 font=(FONT_FAMILY, 8), fg="#856404", bg="#FFF3CD").pack(
+            anchor="w", pady=(4, 0))
+
+    def _show_ppk_banner(self, rinex):
+        """Show the PPK banner with detected file info."""
+        self._ppk_rinex = rinex
+        self._ppk_corrected = False
+        detail = f"RINEX files found alongside your photos."
+        if rinex.obs_file:
+            detail += f"\n  OBS: {Path(rinex.obs_file).name}"
+        if rinex.mrk_file:
+            detail += f"\n  MRK: {Path(rinex.mrk_file).name}"
+        if rinex.nav_file:
+            detail += f"\n  NAV: {Path(rinex.nav_file).name}"
+        if rinex.approx_lat:
+            detail += f"\n  Position: {rinex.approx_lat:.4f}, {rinex.approx_lon:.4f}"
+        detail += "\n\nRun PPK correction to get cm-accurate photo coordinates before processing."
+        self._ppk_detail_var.set(detail)
+        self._ppk_status_label.configure(text="Ready")
+        self._ppk_progress_var.set("")
+        self._ppk_correct_btn.configure(state="normal")
+        self._ppk_frame.pack(in_=self._content, fill="x", pady=(0, 8),
+                              before=self.scan_btn.master)
+
+    def _hide_ppk_banner(self):
+        self._ppk_frame.pack_forget()
+
+    def _on_ppk_correct(self):
+        """Run PPK correction in a background thread."""
+        if not self._ppk_rinex:
+            return
+
+        self._set_running(True)
+        self._ppk_correct_btn.configure(state="disabled")
+        self._ppk_skip_btn.configure(state="disabled")
+        self._ppk_status_label.configure(text="Processing...")
+
+        rinex = self._ppk_rinex
+        msg_queue = queue.Queue()
+
+        def run():
+            try:
+                def progress_cb(stage, detail):
+                    msg_queue.put(("stage", stage, detail))
+
+                result = run_ppk_correction(rinex, progress_callback=progress_cb)
+                msg_queue.put(("done", result))
+            except Exception as e:
+                msg_queue.put(("error", str(e)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+        def on_done(result):
+            self._set_running(False)
+            self._ppk_skip_btn.configure(state="normal")
+            if result.success:
+                self._ppk_corrected = True
+                self._ppk_frame.configure(bg="#D4EDDA", highlightbackground="#C3E6CB")
+                for widget in self._ppk_frame.winfo_children():
+                    try:
+                        widget.configure(bg="#D4EDDA")
+                        for child in widget.winfo_children():
+                            try:
+                                child.configure(bg="#D4EDDA")
+                            except tk.TclError:
+                                pass
+                    except tk.TclError:
+                        pass
+                self._ppk_status_label.configure(
+                    text=f"Corrected: {result.photos_corrected}/{result.photos_total} "
+                         f"({result.fix_rate:.0%} fix rate)",
+                    fg="#155724")
+                self._ppk_detail_var.set(
+                    f"PPK correction complete using CORS station {result.cors_station} "
+                    f"({result.baseline_km} km baseline).\n"
+                    f"Photos are now cm-accurate. Proceed with Scan.")
+                self._ppk_correct_btn.configure(state="disabled")
+            else:
+                self._ppk_status_label.configure(text="Failed", fg="#721C24")
+                self._ppk_progress_var.set(f"Error: {result.error}")
+                self._ppk_correct_btn.configure(state="normal")
+
+        self._start_polling(msg_queue, on_done)
+
+    def _on_ppk_skip(self):
+        """Skip PPK correction and proceed with raw GPS."""
+        self._ppk_corrected = False
+        self._hide_ppk_banner()
 
     # ── Build: Scan Button ──
 
@@ -401,6 +556,7 @@ class PortfolioMakerApp:
             pass
         defaults = load_settings()
         self.source_var.set("")
+        self.output_var.set("")
         self.job_type_var.set(defaults["job_type"])
         self.site_name_var.set("")
         self.threshold_var.set(defaults["threshold"])
@@ -538,6 +694,25 @@ class PortfolioMakerApp:
         folder = filedialog.askdirectory(title="Select folder with drone photos")
         if folder:
             self.source_var.set(folder)
+            self._check_ppk_data(folder)
+
+    def _browse_output(self):
+        folder = filedialog.askdirectory(title="Select output folder for deliverables")
+        if folder:
+            self.output_var.set(folder)
+
+    def _check_ppk_data(self, folder):
+        """Check for RINEX/PPK data in the selected folder."""
+        self._hide_ppk_banner()
+        self._ppk_rinex = None
+        self._ppk_corrected = False
+
+        def check():
+            rinex = detect_rinex(folder)
+            if rinex:
+                self.root.after(0, self._show_ppk_banner, rinex)
+
+        threading.Thread(target=check, daemon=True).start()
 
     # ── Validation ──
 
@@ -637,8 +812,15 @@ class PortfolioMakerApp:
                     self.status_var.set(f"Scanning: {current}/{total}")
                 elif kind == "stage":
                     _, stage, detail = msg
-                    self.status_var.set(f"{stage}: {detail}")
-                    self._log(f"[{stage}] {detail}")
+                    if stage == "nodeodm_progress":
+                        try:
+                            self.progress_var.set(float(detail))
+                            self.status_var.set(f"Processing: {detail}%")
+                        except ValueError:
+                            pass
+                    else:
+                        self.status_var.set(f"{stage}: {detail}")
+                        self._log(f"[{stage}] {detail}")
                 elif kind == "done":
                     _, result = msg
                     on_done_callback(result)
@@ -703,8 +885,12 @@ class PortfolioMakerApp:
                         f"Using: {self._working_set.total} photos — all ({preset['label']} preset)")
 
                 site = self.site_name_var.get().strip() or "Unnamed"
-                from portfolio_service import build_output_dir
-                self._output_var.set(f"Output: {build_output_dir(site)}")
+                custom_out = self.output_var.get().strip()
+                if custom_out:
+                    self._output_var.set(f"Output: {custom_out}")
+                else:
+                    from portfolio_service import build_output_dir
+                    self._output_var.set(f"Output: {build_output_dir(site, job_type=self.job_type_var.get())}")
 
                 # Auto-fill bbox from GPS bounds
                 if result.gps_bounds:
@@ -782,8 +968,6 @@ class PortfolioMakerApp:
         self._set_running(True)
         self._clear_log()
         self.progress_var.set(0)
-        self.progress_bar.configure(mode="indeterminate")
-        self.progress_bar.start(20)
 
         source = self.source_var.get().strip()
         threshold = self._get_threshold()
@@ -792,6 +976,7 @@ class PortfolioMakerApp:
             self._set_running(False)
             return
         base_url = self.nodeodm_url_var.get().strip() or None
+        custom_output = self.output_var.get().strip() or None
         msg_queue = queue.Queue()
 
         def run():
@@ -807,6 +992,7 @@ class PortfolioMakerApp:
                     bbox=bbox,
                     base_url=base_url,
                     progress_callback=progress_cb,
+                    output_dir=custom_output,
                 )
                 msg_queue.put(("done", result))
             except Exception as e:
@@ -816,8 +1002,6 @@ class PortfolioMakerApp:
 
         def on_done(result):
             try:
-                self.progress_bar.stop()
-                self.progress_bar.configure(mode="determinate")
                 self.progress_var.set(100)
 
                 if "error" in result:
@@ -858,6 +1042,7 @@ class PortfolioMakerApp:
         if bbox == "invalid":
             self._set_running(False)
             return
+        custom_output = self.output_var.get().strip() or None
         msg_queue = queue.Queue()
 
         def run():
@@ -872,6 +1057,7 @@ class PortfolioMakerApp:
                     threshold=threshold,
                     bbox=bbox,
                     progress_callback=progress_cb,
+                    output_dir=custom_output,
                 )
                 msg_queue.put(("done", result))
             except Exception as e:

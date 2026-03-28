@@ -22,7 +22,7 @@ JOB_TYPES = [
 _SPLIT_MERGE = [
     {"name": "split", "value": 4},
     {"name": "split-overlap", "value": 150},
-    {"name": "sm-cluster", "value": "none"},
+    {"name": "sm-cluster", "value": "http://localhost:3000"},
 ]
 
 PRESETS = {
