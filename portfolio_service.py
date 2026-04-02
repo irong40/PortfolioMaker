@@ -95,7 +95,7 @@ def write_site_info(output_dir, site_name, job_type):
 
 def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
                        base_url=None, poll_interval=30, max_hours=6,
-                       progress_callback=None):
+                       progress_callback=None, cancel_event=None):
     """Submit photos to NodeODM and poll until complete.
 
     Returns:
@@ -108,7 +108,8 @@ def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
         return None, "Task submission failed"
 
     info = poll_task(url, task_uuid, poll_interval=poll_interval,
-                     max_hours=max_hours, progress_callback=progress_callback)
+                     max_hours=max_hours, progress_callback=progress_callback,
+                     cancel_event=cancel_event)
 
     if info is None:
         return None, "Task timed out"
@@ -116,6 +117,11 @@ def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
     status_code = info.get("status", {}).get("code", -1)
     if status_code == 40:
         return task_uuid, info
+    if status_code == -2:
+        return None, "Canceled by user"
+    if status_code == -3:
+        error = info.get("status", {}).get("errorMessage", "NodeODM offline")
+        return None, error
     if status_code == 30:
         error = info.get("status", {}).get("errorMessage", "unknown")
         return None, f"Task failed: {error}"
@@ -137,7 +143,7 @@ def download_outputs(task_uuid, output_dir, download_list, base_url=None):
 
 def process_job(source_dir, job_type, site_name, threshold=-70.0,
                 bbox=None, base_url=None, progress_callback=None,
-                output_dir=None):
+                output_dir=None, cancel_event=None):
     """Full portfolio job: scan → filter → submit → download.
 
     This is the main entry point called by the GUI or CLI.
@@ -229,7 +235,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
 
         task_uuid, result = submit_to_nodeodm(
             photo_paths, preset["odm_options"], task_name=task_name, base_url=base_url,
-            progress_callback=on_nodeodm_progress,
+            progress_callback=on_nodeodm_progress, cancel_event=cancel_event,
         )
 
         if task_uuid is None:

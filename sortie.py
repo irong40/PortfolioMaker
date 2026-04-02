@@ -142,6 +142,7 @@ class PortfolioMakerApp:
         self._mipmap_ok = False
         self._ppk_rinex = None
         self._ppk_corrected = False
+        self._cancel_event = None
         self._settings = load_settings()
 
         configure_styles()
@@ -593,6 +594,11 @@ class PortfolioMakerApp:
                                          style="Secondary.TButton")
         self.portfolio_btn.pack(side="left", padx=8)
 
+        self.cancel_btn = ttk.Button(self._action_frame, text="Cancel",
+                                      command=self._on_cancel, style="Secondary.TButton")
+        self.cancel_btn.pack(side="left", padx=4)
+        self.cancel_btn.configure(state="disabled")
+
         ttk.Button(self._action_frame, text="Quit",
                    command=self._on_close).pack(side="right")
 
@@ -780,6 +786,16 @@ class PortfolioMakerApp:
         if hasattr(self, 'process_btn'):
             self.process_btn.configure(state=state)
             self.portfolio_btn.configure(state=state)
+        if hasattr(self, 'cancel_btn'):
+            self.cancel_btn.configure(state="normal" if running else "disabled")
+
+    def _on_cancel(self):
+        """Signal the background thread to stop polling."""
+        if self._cancel_event:
+            self._cancel_event.set()
+            self._log("[cancel] Canceling — waiting for current operation to stop...")
+            self.status_var.set("Canceling...")
+            self.cancel_btn.configure(state="disabled")
 
     def _log(self, text):
         self.results_text.configure(state="normal")
@@ -965,6 +981,7 @@ class PortfolioMakerApp:
                     f"Continue anyway?"):
                 return
 
+        self._cancel_event = threading.Event()
         self._set_running(True)
         self._clear_log()
         self.progress_var.set(0)
@@ -978,6 +995,7 @@ class PortfolioMakerApp:
         base_url = self.nodeodm_url_var.get().strip() or None
         custom_output = self.output_var.get().strip() or None
         msg_queue = queue.Queue()
+        cancel_event = self._cancel_event
 
         def run():
             try:
@@ -993,6 +1011,7 @@ class PortfolioMakerApp:
                     base_url=base_url,
                     progress_callback=progress_cb,
                     output_dir=custom_output,
+                    cancel_event=cancel_event,
                 )
                 msg_queue.put(("done", result))
             except Exception as e:
