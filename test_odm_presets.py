@@ -42,12 +42,14 @@ class TestPresets:
             assert "split-overlap" in option_names, f"{name} missing split-overlap"
             assert "sm-cluster" in option_names, f"{name} missing sm-cluster"
 
-    def test_split_value_is_4(self):
+    def test_split_value_is_reasonable(self):
         for name, preset in PRESETS.items():
             if preset.get("engine") == "mipmap":
                 continue
             split_opt = next(o for o in preset["odm_options"] if o["name"] == "split")
-            assert split_opt["value"] == 4, f"{name} split should be 4"
+            assert 50 <= split_opt["value"] <= 500, (
+                f"{name} split={split_opt['value']} should be 50-500 images per submodel"
+            )
 
     def test_downloads_are_lists(self):
         for name, preset in PRESETS.items():
