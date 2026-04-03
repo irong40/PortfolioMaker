@@ -121,13 +121,15 @@ def classify_pitch(pitch, threshold=-70.0):
 
 
 def scan_photos(source_dir):
-    """Find all photo files in a directory (non-recursive, skips subdirs)."""
+    """Find all photo files in a directory tree (recursive)."""
     source = Path(source_dir)
     photos = []
-    for f in sorted(source.iterdir()):
-        if f.is_file() and f.suffix.lower() in PHOTO_EXTENSIONS:
-            photos.append(f)
-    return photos
+    for root, dirs, files in os.walk(source):
+        for f in sorted(files):
+            fpath = Path(root) / f
+            if fpath.suffix.lower() in PHOTO_EXTENSIONS:
+                photos.append(fpath)
+    return sorted(photos)
 
 
 def scan_panoramas(source_dir):
@@ -372,6 +374,16 @@ def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
         cv2.imwrite(str(output_path), pano, [cv2.IMWRITE_JPEG_QUALITY, 95])
         ps.stitched_path = str(output_path)
         log.info(f"  Saved: {output_path.name} ({pano.shape[1]}x{pano.shape[0]})")
+
+        # Copy to central panorama gallery for DroneInvoice uploads
+        pano_gallery = Path(os.environ.get("PANO_GALLERY", r"E:\Portfolio\_Panoramas"))
+        try:
+            pano_gallery.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(str(output_path), str(pano_gallery / output_path.name))
+            log.info(f"  Copied to gallery: {pano_gallery / output_path.name}")
+        except OSError as e:
+            log.warning(f"  Gallery copy failed: {e}")
 
         if progress_callback:
             progress_callback(i + 1, len(panorama_sets), folder_name)
