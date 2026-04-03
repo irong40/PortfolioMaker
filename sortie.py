@@ -147,14 +147,15 @@ class PortfolioMakerApp:
 
         configure_styles()
         self._build_header()
+        self._build_status_bar()  # Pack bottom first so canvas doesn't steal its space
         self._build_input_section()
         self._build_ppk_banner()
+        self._build_preflight_section()
         self._build_scan_button()
         self._build_results_section()
         self._build_advanced_section()
         self._build_action_buttons()
         self._build_progress_section()
-        self._build_status_bar()
 
         # Restore saved settings
         self._apply_settings()
@@ -271,8 +272,37 @@ class PortfolioMakerApp:
     # ── Build: Input Section (folder + job type + site name) ──
 
     def _build_input_section(self):
-        self._content = ttk.Frame(self.root)
-        self._content.pack(fill="both", expand=True, padx=14, pady=(10, 0))
+        # Scrollable container: Canvas + Scrollbar between header and status bar
+        self._scroll_canvas = tk.Canvas(self.root, bg=BG_COLOR,
+                                         highlightthickness=0, bd=0)
+        self._scroll_vsb = ttk.Scrollbar(self.root, orient="vertical",
+                                          command=self._scroll_canvas.yview)
+        self._scroll_canvas.configure(yscrollcommand=self._scroll_vsb.set)
+
+        self._scroll_vsb.pack(side="right", fill="y")
+        self._scroll_canvas.pack(fill="both", expand=True)
+
+        self._content = ttk.Frame(self._scroll_canvas)
+        self._content_window = self._scroll_canvas.create_window(
+            (0, 0), window=self._content, anchor="nw")
+
+        # Keep content width in sync with canvas width
+        def _on_canvas_configure(event):
+            self._scroll_canvas.itemconfigure(self._content_window, width=event.width)
+        self._scroll_canvas.bind("<Configure>", _on_canvas_configure)
+
+        # Update scroll region when content changes size
+        def _on_content_configure(event):
+            self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox("all"))
+        self._content.bind("<Configure>", _on_content_configure)
+
+        # Mousewheel scrolling (Windows)
+        def _on_mousewheel(event):
+            self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Add padding inside the content frame
+        self._content.configure(padding=(14, 10, 14, 0))
 
         # Photo folder
         src_frame = ttk.LabelFrame(self._content, text="Photo Folder", padding=10)
@@ -458,6 +488,150 @@ class PortfolioMakerApp:
         """Skip PPK correction and proceed with raw GPS."""
         self._ppk_corrected = False
         self._hide_ppk_banner()
+
+    # ── Build: Pre-Flight (Parcel Lookup + ACL Calibration) ──
+
+    def _build_preflight_section(self):
+        pf_frame = ttk.LabelFrame(self._content, text="Pre-Flight", padding=10)
+        pf_frame.pack(fill="x", pady=(0, 8))
+
+        # Parcel lookup
+        ttk.Label(pf_frame, text="Parcel Boundary (KML for WaypointMap)",
+                  font=(FONT_FAMILY, 9, "bold")).pack(anchor="w")
+
+        parcel_row = ttk.Frame(pf_frame)
+        parcel_row.pack(fill="x", pady=(4, 0))
+        ttk.Label(parcel_row, text="Address:").pack(side="left")
+        self.parcel_address_var = tk.StringVar()
+        ttk.Entry(parcel_row, textvariable=self.parcel_address_var).pack(
+            side="left", fill="x", expand=True, padx=(6, 6))
+        ttk.Button(parcel_row, text="Lookup KML",
+                   command=self._lookup_parcel,
+                   style="Secondary.TButton").pack(side="left")
+
+        self.parcel_result_var = tk.StringVar(value="")
+        ttk.Label(pf_frame, textvariable=self.parcel_result_var,
+                  font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(anchor="w", pady=(2, 0))
+
+        # Separator
+        ttk.Separator(pf_frame, orient="horizontal").pack(fill="x", pady=8)
+
+        # ACL Calibration
+        ttk.Label(pf_frame, text="ACL Calibration (Above Canopy Level)",
+                  font=(FONT_FAMILY, 9, "bold")).pack(anchor="w")
+
+        acl_row1 = ttk.Frame(pf_frame)
+        acl_row1.pack(fill="x", pady=(4, 0))
+        ttk.Label(acl_row1, text="Canopy height (ft):").pack(side="left")
+        self.canopy_height_var = tk.StringVar(value="0")
+        ttk.Entry(acl_row1, textvariable=self.canopy_height_var, width=8).pack(side="left", padx=6)
+        ttk.Label(acl_row1, text="Required ACL (ft):").pack(side="left", padx=(12, 0))
+        self.required_acl_var = tk.StringVar(value="200")
+        ttk.Entry(acl_row1, textvariable=self.required_acl_var, width=8).pack(side="left", padx=6)
+        ttk.Button(acl_row1, text="Calc", command=self._calc_acl,
+                   style="Secondary.TButton").pack(side="left", padx=(6, 0))
+        ttk.Button(acl_row1, text="From Photo...", command=self._read_canopy_from_photo,
+                   style="Secondary.TButton").pack(side="left", padx=(6, 0))
+
+        self.rec_alt_var = tk.StringVar(value="")
+        ttk.Label(pf_frame, textvariable=self.rec_alt_var,
+                  font=(FONT_FAMILY, 10, "bold"), foreground=SENTINEL_PURPLE).pack(anchor="w", pady=(4, 0))
+
+    def _lookup_parcel(self):
+        """Look up parcel boundary and export KML."""
+        address = self.parcel_address_var.get().strip()
+        if not address:
+            messagebox.showwarning("Missing Address", "Enter a property address first.")
+            return
+
+        self.parcel_result_var.set("Looking up parcel...")
+        self.root.update()
+
+        try:
+            # Import from drone-pipeline
+            sys.path.insert(0, r"C:\Users\redle.SOULAAN\Documents\drone-pipeline")
+            from parcel_lookup import run as parcel_run
+            result = parcel_run(address=address)
+
+            self.parcel_result_var.set(
+                f"{result['parcel_id']} | {result['acres']} acres | "
+                f"Owner: {result.get('owner', 'N/A')} | KML saved"
+            )
+
+            kml_path = result["kml_path"]
+            msg = (
+                f"Parcel ID: {result['parcel_id']}\n"
+                f"Area: {result['acres']} acres\n"
+                f"Owner: {result.get('owner', 'N/A')}\n\n"
+                f"KML saved to:\n{kml_path}\n\n"
+                f"Load this into WaypointMap to define your survey area."
+            )
+
+            if messagebox.askyesno("Parcel Found", msg + "\n\nOpen KML file location?"):
+                os.startfile(str(Path(kml_path).parent))
+
+        except Exception as e:
+            self.parcel_result_var.set(f"Error: {e}")
+            messagebox.showerror("Parcel Lookup Failed", str(e))
+
+    def _calc_acl(self):
+        """Calculate recommended flight altitude from canopy height + required ACL."""
+        try:
+            canopy = float(self.canopy_height_var.get() or 0)
+            acl = float(self.required_acl_var.get() or 200)
+            rec = canopy + acl
+            self.rec_alt_var.set(f"Recommended altitude: {rec:.0f} ft AGL")
+        except ValueError:
+            self.rec_alt_var.set("Invalid input")
+
+    def _read_canopy_from_photo(self):
+        """Read canopy height from a thermal photo's ObjectDistance EXIF field."""
+        filepath = filedialog.askopenfilename(
+            title="Select thermal calibration photo",
+            filetypes=[
+                ("Thermal photos", "*.jpg *.jpeg *.rjpeg *.tif *.tiff"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not filepath:
+            return
+
+        try:
+            from sentinel_core.metadata import extract_thermal_metadata
+            thermal = extract_thermal_metadata(filepath)
+
+            if not thermal:
+                messagebox.showwarning("No Data", "No thermal metadata found in this photo.")
+                return
+
+            if "canopy_height" in thermal:
+                height_m = thermal["canopy_height"]
+                height_ft = height_m * 3.28084
+                self.canopy_height_var.set(f"{height_ft:.0f}")
+                self._calc_acl()
+                messagebox.showinfo(
+                    "ACL Calibration",
+                    f"Rangefinder distance: {thermal.get('object_distance', '?')} m\n"
+                    f"Drone AGL: {thermal.get('relative_altitude', '?')} m\n"
+                    f"Canopy height: {height_m:.1f} m ({height_ft:.0f} ft)",
+                )
+            elif "object_distance" in thermal:
+                messagebox.showinfo(
+                    "Partial Data",
+                    f"ObjectDistance: {thermal['object_distance']} m\n"
+                    f"Gimbal pitch was {thermal.get('gimbal_pitch', '?')}deg\n\n"
+                    f"Point camera straight down (-90deg) for canopy height.",
+                )
+            else:
+                messagebox.showwarning(
+                    "No Rangefinder Data",
+                    "No ObjectDistance field found.\n"
+                    "Enable rangefinder before taking the calibration photo.",
+                )
+        except ImportError:
+            messagebox.showerror("Error", "sentinel_core not installed.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read thermal metadata: {e}")
 
     # ── Build: Scan Button ──
 
@@ -816,6 +990,21 @@ class PortfolioMakerApp:
 
     # ── Queue Polling ──
 
+    # Stage → progress percentage milestones
+    # These map pipeline stages to approximate progress bar positions
+    STAGE_PROGRESS = {
+        "scan": 5,
+        "filtered": 15,
+        "sort": 20,
+        "submit": 25,
+        "processing": 30,  # Base for processing; nodeodm_progress overrides with 25-90 range
+        "download": 90,
+        "panorama": 92,
+        "report": 95,
+        "complete": 100,
+        "warning": None,  # Don't update bar on warnings
+    }
+
     def _start_polling(self, msg_queue, on_done_callback):
         try:
             while True:
@@ -830,11 +1019,18 @@ class PortfolioMakerApp:
                     _, stage, detail = msg
                     if stage == "nodeodm_progress":
                         try:
-                            self.progress_var.set(float(detail))
+                            # Map NodeODM 0-100% into 25-90% of the overall bar
+                            odm_pct = float(detail)
+                            overall_pct = 25 + (odm_pct * 0.65)
+                            self.progress_var.set(overall_pct)
                             self.status_var.set(f"Processing: {detail}%")
                         except ValueError:
                             pass
                     else:
+                        # Update progress bar based on stage milestones
+                        stage_pct = self.STAGE_PROGRESS.get(stage)
+                        if stage_pct is not None:
+                            self.progress_var.set(stage_pct)
                         self.status_var.set(f"{stage}: {detail}")
                         self._log(f"[{stage}] {detail}")
                 elif kind == "done":
