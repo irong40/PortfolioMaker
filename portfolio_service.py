@@ -162,7 +162,6 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         On error, dict contains "error" key.
     """
     log = logging.getLogger(__name__)
-    preset = get_preset(job_type)
 
     def notify(stage, detail=""):
         if progress_callback:
@@ -174,6 +173,12 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     classification = classify_photos(source_dir, threshold=threshold)
     if classification.total == 0:
         return {"error": "No photos found"}
+
+    # Get preset with platform-specific overrides
+    platform = classification.platform
+    preset = get_preset(job_type, platform=platform)
+    if platform:
+        notify("platform", f"Detected {platform} — applied platform overrides")
 
     # 2. Filter by preset + optional bbox
     working_set = scan_for_job(classification, preset)
@@ -313,7 +318,6 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
         dict with output_dir, classification, working_set.
     """
     log = logging.getLogger(__name__)
-    preset = get_preset(job_type)
 
     def notify(stage, detail=""):
         if progress_callback:
@@ -324,6 +328,11 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
     classification = classify_photos(source_dir, threshold=threshold)
     if classification.total == 0:
         return {"error": "No photos found"}
+
+    platform = classification.platform
+    preset = get_preset(job_type, platform=platform)
+    if platform:
+        notify("platform", f"Detected {platform} — applied platform overrides")
 
     working_set = scan_for_job(classification, preset)
     if bbox:

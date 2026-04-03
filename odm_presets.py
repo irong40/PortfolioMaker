@@ -242,9 +242,96 @@ PRESETS = {
 }
 
 
-def get_preset(job_type):
+# ── Platform-specific ODM overrides ─────────────────────────────────────────
+#
+# Each platform profile describes the drone's sensor characteristics.
+# apply_platform_overrides() merges these into any preset's odm_options
+# so the processing matches the actual hardware.
+
+PLATFORM_PROFILES = {
+    "mini4pro": {
+        "label": "DJI Mini 4 Pro",
+        "shutter": "electronic",       # Rolling shutter CMOS
+        "has_rtk": False,               # Consumer GPS only
+        "sensor_size": "1/1.3in",
+        "gsd_200ft_cm": 2.18,           # GSD at 200ft ACL (48MP mode)
+        "odm_overrides": [
+            {"name": "rolling-shutter", "value": True},
+            {"name": "gps-accuracy", "value": 5},
+        ],
+    },
+    "m4e": {
+        "label": "DJI Matrice 4E",
+        "shutter": "mechanical",        # Global / mechanical shutter
+        "has_rtk": True,
+        "sensor_size": "1/1.3in",
+        "gsd_200ft_cm": 2.18,
+        "odm_overrides": [
+            # Mechanical shutter — no rolling-shutter correction needed
+            {"name": "gps-accuracy", "value": 0.02},
+        ],
+    },
+    "m3e": {
+        "label": "DJI Mavic 3 Enterprise",
+        "shutter": "mechanical",        # Mechanical shutter on wide camera
+        "has_rtk": True,
+        "sensor_size": "4/3in",
+        "gsd_200ft_cm": 1.25,
+        "odm_overrides": [
+            {"name": "gps-accuracy", "value": 0.02},
+        ],
+    },
+}
+
+
+def apply_platform_overrides(preset, platform):
+    """Apply platform-specific ODM option overrides to a preset.
+
+    Merges the platform's odm_overrides into the preset's odm_options,
+    replacing any existing option with the same name.
+
+    Args:
+        preset: A preset dict (already deep-copied via get_preset).
+        platform: Platform string (e.g. "mini4pro", "m4e", "m3e") or None.
+
+    Returns:
+        The modified preset (same dict, mutated in place).
+    """
+    if not platform or platform not in PLATFORM_PROFILES:
+        return preset
+
+    profile = PLATFORM_PROFILES[platform]
+    overrides = profile.get("odm_overrides", [])
+
+    if not overrides or preset.get("engine") == "mipmap":
+        return preset
+
+    existing_names = {o["name"] for o in preset["odm_options"]}
+
+    for override in overrides:
+        name = override["name"]
+        if name in existing_names:
+            # Replace existing value
+            for opt in preset["odm_options"]:
+                if opt["name"] == name:
+                    opt["value"] = override["value"]
+                    break
+        else:
+            # Add new option
+            preset["odm_options"].append(copy.deepcopy(override))
+
+    return preset
+
+
+def get_preset(job_type, platform=None):
     """Return a deep copy of the preset for the given job type.
+
+    If platform is provided, applies platform-specific overrides
+    (e.g. rolling-shutter for Mini 4 Pro, RTK GPS accuracy for M4E).
 
     Raises KeyError if job_type is not valid.
     """
-    return copy.deepcopy(PRESETS[job_type])
+    preset = copy.deepcopy(PRESETS[job_type])
+    if platform:
+        apply_platform_overrides(preset, platform)
+    return preset
