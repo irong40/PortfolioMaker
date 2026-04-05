@@ -120,11 +120,20 @@ def classify_pitch(pitch, threshold=-70.0):
     return "oblique"
 
 
+OUTPUT_DIRS = {"nadir", "oblique", "unknown", "panorama"}
+
+
 def scan_photos(source_dir):
-    """Find all photo files in a directory tree (recursive)."""
+    """Find all photo files in a directory tree (recursive).
+
+    Skips output subdirectories created by sort_photos() (nadir/, oblique/,
+    unknown/, panorama/) to avoid rescanning already-sorted output.
+    """
     source = Path(source_dir)
     photos = []
     for root, dirs, files in os.walk(source):
+        # Prune output directories so os.walk doesn't descend into them
+        dirs[:] = [d for d in dirs if d.lower() not in OUTPUT_DIRS]
         for f in sorted(files):
             fpath = Path(root) / f
             if fpath.suffix.lower() in PHOTO_EXTENSIONS:
