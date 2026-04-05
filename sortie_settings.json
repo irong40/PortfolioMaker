@@ -1,8 +1,12 @@
 {
-  "source_dir": "E:/DroneWorkflow/Input_Raw/malltest/DJI_202603151743_006_mall1",
-  "job_type": "construction_progress",
-  "site_name": "DronersIO_Job1",
+  "source_dir": "E:/DroneWorkflow/Input_Raw/DJI_202603151743_006_mall1/nadir",
+  "output_dir": "",
+  "job_type": "real_estate",
+  "site_name": "TanRd_1",
   "threshold": "-70",
   "nodeodm_url": "http://localhost:3000",
-  "window_geometry": "780x800+919+117"
+  "window_geometry": "924x800+1980+42",
+  "lightroom_watch_dir": "E:\\DroneWorkflow\\LightroomWatch",
+  "lightroom_export_dir": "E:\\DroneWorkflow\\LightroomExport",
+  "processing_input_dir": "E:\\DroneWorkflow\\ProcessingInput"
 }
