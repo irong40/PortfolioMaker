@@ -10,8 +10,10 @@ from photo_classifier import (
     filter_photos,
     scan_photos,
     write_manifest,
+    _resolve_collision,
     PhotoMeta,
     ClassificationResult,
+    TransferStats,
     PHOTO_EXTENSIONS,
 )
 
@@ -236,3 +238,70 @@ class TestBboxEdgeCases:
         bbox = (37.0, 36.0, -77.0, -76.0)  # inverted lat
         r = filter_photos(result, bbox=bbox)
         assert r.total == 0
+
+
+# ─── collision resolution ──────────────────────────────────────────────────
+
+class TestResolveCollision:
+    def test_no_collision(self, tmp_path):
+        dest = tmp_path / "photo.jpg"
+        resolved, renamed = _resolve_collision(dest)
+        assert resolved == dest
+        assert renamed is False
+
+    def test_single_collision(self, tmp_path):
+        dest = tmp_path / "photo.jpg"
+        dest.write_bytes(b"existing")
+        resolved, renamed = _resolve_collision(dest)
+        assert resolved == tmp_path / "photo_1.jpg"
+        assert renamed is True
+
+    def test_multiple_collisions(self, tmp_path):
+        dest = tmp_path / "photo.jpg"
+        dest.write_bytes(b"existing")
+        (tmp_path / "photo_1.jpg").write_bytes(b"existing")
+        (tmp_path / "photo_2.jpg").write_bytes(b"existing")
+        resolved, renamed = _resolve_collision(dest)
+        assert resolved == tmp_path / "photo_3.jpg"
+        assert renamed is True
+
+
+# ─── transfer stats ────────────────────────────────────────────────────────
+
+class TestTransferStats:
+    def test_defaults(self):
+        stats = TransferStats()
+        assert stats.transferred == 0
+        assert stats.skipped == 0
+        assert stats.failed == 0
+        assert stats.renamed == 0
+        assert stats.total_attempted == 0
+
+    def test_total_attempted(self):
+        stats = TransferStats(transferred=5, skipped=1, failed=2)
+        assert stats.total_attempted == 8
+
+
+# ─── scan_photos output dir exclusion ──────────────────────────────────────
+
+class TestScanPhotosOutputExclusion:
+    def test_skips_all_output_dirs(self, tmp_path):
+        """scan_photos skips nadir/, oblique/, unknown/, panorama/ dirs."""
+        for dirname in ("nadir", "oblique", "unknown", "panorama"):
+            sub = tmp_path / dirname
+            sub.mkdir()
+            (sub / "DJI_0001.JPG").write_bytes(b"fake")
+
+        (tmp_path / "DJI_root.JPG").write_bytes(b"fake")
+        result = scan_photos(str(tmp_path))
+        assert len(result) == 1
+        assert result[0].name == "DJI_root.JPG"
+
+    def test_recurses_into_non_output_dirs(self, tmp_path):
+        """scan_photos still recurses into normal subdirectories."""
+        sub = tmp_path / "flight_001"
+        sub.mkdir()
+        (tmp_path / "DJI_root.JPG").write_bytes(b"fake")
+        (sub / "DJI_sub.JPG").write_bytes(b"fake")
+        result = scan_photos(str(tmp_path))
+        assert len(result) == 2

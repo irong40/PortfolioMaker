@@ -77,6 +77,19 @@ class PanoramaSet:
 
 
 @dataclass
+class TransferStats:
+    """Summary statistics for a file transfer operation."""
+    transferred: int = 0
+    skipped: int = 0
+    failed: int = 0
+    renamed: int = 0  # collision resolved via _N suffix
+
+    @property
+    def total_attempted(self):
+        return self.transferred + self.skipped + self.failed
+
+
+@dataclass
 class ClassificationResult:
     source_dir: str
     nadir_count: int = 0
@@ -96,6 +109,7 @@ class ClassificationResult:
     threshold: float = -70.0
     created_at: str = ""
     failed_transfers: list = field(default_factory=list)
+    transfer_stats: TransferStats = field(default_factory=TransferStats)
 
     @property
     def gps_bounds(self):
@@ -259,6 +273,30 @@ def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
     return result
 
 
+def _resolve_collision(dest):
+    """Return a non-colliding path by appending _1, _2, etc."""
+    if not dest.exists():
+        return dest, False
+    stem = dest.stem
+    suffix = dest.suffix
+    parent = dest.parent
+    for i in range(1, 10000):
+        candidate = parent / f"{stem}_{i}{suffix}"
+        if not candidate.exists():
+            return candidate, True
+    # Extremely unlikely — fall through
+    return dest, False
+
+
+def _write_transfer_journal(journal_path, entries):
+    """Write a JSON transfer journal for diagnosing partial failures."""
+    with open(journal_path, "w") as f:
+        json.dump({
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "transfers": entries,
+        }, f, indent=2)
+
+
 def sort_photos(result, copy=True, progress_callback=None):
     """Copy (or move) classified photos into nadir/oblique/unknown subfolders.
 
@@ -286,6 +324,8 @@ def sort_photos(result, copy=True, progress_callback=None):
     result.failed_transfers = []
 
     transfer = shutil.copy2 if copy else shutil.move
+    stats = TransferStats()
+    journal_entries = []
 
     for i, photo in enumerate(result.photos):
         if photo.classification == "nadir":
@@ -298,20 +338,45 @@ def sort_photos(result, copy=True, progress_callback=None):
             dest = unknown_dir / photo.filename
 
         try:
-            if dest.exists():
-                log.warning(f"Skipping collision: {dest}")
-                result.failed_transfers.append((photo.filename, "file already exists"))
-                continue
+            dest, was_renamed = _resolve_collision(dest)
+            if was_renamed:
+                stats.renamed += 1
+                log.info(f"Collision resolved: {photo.filename} -> {dest.name}")
             transfer(photo.path, dest)
+            stats.transferred += 1
+            journal_entries.append({
+                "source": photo.path,
+                "destination": str(dest),
+                "status": "ok",
+                "renamed": was_renamed,
+            })
         except (OSError, shutil.Error) as e:
             log.error(f"Failed to {'copy' if copy else 'move'} {photo.filename}: {e}")
             result.failed_transfers.append((photo.filename, str(e)))
+            stats.failed += 1
+            journal_entries.append({
+                "source": photo.path,
+                "destination": str(dest),
+                "status": "failed",
+                "error": str(e),
+            })
 
         if progress_callback and ((i + 1) % 100 == 0 or (i + 1) == len(result.photos)):
             progress_callback(i + 1, len(result.photos), photo.filename)
 
+    result.transfer_stats = stats
+
+    # Write transfer journal for diagnosing partial failures
+    journal_path = source / "transfer_journal.json"
+    try:
+        _write_transfer_journal(journal_path, journal_entries)
+    except OSError as e:
+        log.warning(f"Could not write transfer journal: {e}")
+
     if result.failed_transfers:
-        log.warning(f"{len(result.failed_transfers)} file(s) failed to transfer")
+        log.warning(f"{stats.failed} file(s) failed to transfer")
+    log.info(f"Transfer complete: {stats.transferred} transferred, "
+             f"{stats.renamed} renamed, {stats.failed} failed")
 
     # Stitch panoramas if any detected
     if result.panorama_sets:
@@ -464,24 +529,51 @@ def export_photos(result, output_dir, copy=True, progress_callback=None):
     out.mkdir(parents=True, exist_ok=True)
     transfer = shutil.copy2 if copy else shutil.move
     result.failed_transfers = []
+    stats = TransferStats()
+    journal_entries = []
 
     for i, photo in enumerate(result.photos):
         dest = out / photo.filename
         try:
-            if dest.exists():
-                log.warning(f"Skipping collision: {dest}")
-                result.failed_transfers.append((photo.filename, "file already exists"))
-                continue
+            dest, was_renamed = _resolve_collision(dest)
+            if was_renamed:
+                stats.renamed += 1
+                log.info(f"Collision resolved: {photo.filename} -> {dest.name}")
             transfer(photo.path, dest)
+            stats.transferred += 1
+            journal_entries.append({
+                "source": photo.path,
+                "destination": str(dest),
+                "status": "ok",
+                "renamed": was_renamed,
+            })
         except (OSError, shutil.Error) as e:
             log.error(f"Failed to export {photo.filename}: {e}")
             result.failed_transfers.append((photo.filename, str(e)))
+            stats.failed += 1
+            journal_entries.append({
+                "source": photo.path,
+                "destination": str(dest),
+                "status": "failed",
+                "error": str(e),
+            })
 
         if progress_callback and ((i + 1) % 100 == 0 or (i + 1) == len(result.photos)):
             progress_callback(i + 1, len(result.photos), photo.filename)
 
+    result.transfer_stats = stats
+
+    # Write transfer journal for diagnosing partial failures
+    journal_path = out / "transfer_journal.json"
+    try:
+        _write_transfer_journal(journal_path, journal_entries)
+    except OSError as e:
+        log.warning(f"Could not write transfer journal: {e}")
+
     if result.failed_transfers:
-        log.warning(f"{len(result.failed_transfers)} file(s) failed to export")
+        log.warning(f"{stats.failed} file(s) failed to export")
+    log.info(f"Export complete: {stats.transferred} transferred, "
+             f"{stats.renamed} renamed, {stats.failed} failed")
 
     return str(out)
 
