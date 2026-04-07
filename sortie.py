@@ -13,6 +13,7 @@ import os
 import sys
 import queue
 import threading
+import traceback
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -448,6 +449,7 @@ class PortfolioMakerApp:
                 result = run_ppk_correction(rinex, progress_callback=progress_cb)
                 msg_queue.put(("done", result))
             except Exception as e:
+                traceback.print_exc()
                 msg_queue.put(("error", str(e)))
 
         threading.Thread(target=run, daemon=True).start()
@@ -1070,6 +1072,7 @@ class PortfolioMakerApp:
                                          progress_callback=progress)
                 msg_queue.put(("done", result))
             except Exception as e:
+                traceback.print_exc()
                 msg_queue.put(("error", str(e)))
 
         threading.Thread(target=run, daemon=True).start()
@@ -1211,6 +1214,7 @@ class PortfolioMakerApp:
                 )
                 msg_queue.put(("done", result))
             except Exception as e:
+                traceback.print_exc()
                 msg_queue.put(("error", str(e)))
 
         threading.Thread(target=run, daemon=True).start()
@@ -1276,6 +1280,7 @@ class PortfolioMakerApp:
                 )
                 msg_queue.put(("done", result))
             except Exception as e:
+                traceback.print_exc()
                 msg_queue.put(("error", str(e)))
 
         threading.Thread(target=run, daemon=True).start()

@@ -267,10 +267,77 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     # 8. Write manifest
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # 9. Generate report
+    # 9. AI analysis + image preparation + report generation
     report_result = None
     try:
         from report_generator import generate_report
+
+        ortho_path = downloaded.get("orthophoto.tif")
+        dsm_path = downloaded.get("dsm.tif")
+        photos = working_set.photos
+
+        # AI photo analysis (skipped gracefully if no API key)
+        ai_analysis = None
+        try:
+            from report_ai import analyze_photos
+            notify("report", "Analyzing photos with AI...")
+            ai_analysis = analyze_photos(photos, job_type, site_name)
+            if ai_analysis:
+                notify("report", f"AI found {len(ai_analysis.get('observations', []))} observations")
+        except ImportError:
+            log.info("report_ai not available — skipping AI analysis")
+
+        # Prepare images for embedding
+        images = None
+        try:
+            from report_images import prepare_report_images
+            notify("report", "Preparing report images...")
+            images = prepare_report_images(photos, ortho_path, dsm_path, output_dir)
+        except ImportError:
+            log.info("report_images not available — skipping image embedding")
+
+        # Point cloud / mesh operations
+        pc_results = {}
+        try:
+            from point_cloud_ops import (
+                find_previous_visit, compare_dsms, save_change_map,
+                cleanup_mesh, get_mesh_stats,
+            )
+
+            # Mesh cleanup + stats (roof, structures, real estate)
+            mesh_path = downloaded.get("textured_model.zip")
+            if mesh_path:
+                notify("report", "Analyzing mesh...")
+                mesh_stats = get_mesh_stats(mesh_path)
+                if mesh_stats:
+                    pc_results["mesh_stats"] = mesh_stats
+
+            # DSM comparison with previous visit (construction, survey)
+            if dsm_path:
+                prev = find_previous_visit(output_dir, site_name, date_str)
+                if prev and prev.get("previous_dsm"):
+                    notify("report", f"Comparing with previous visit ({prev['previous_date']})...")
+                    dsm_diff = compare_dsms(dsm_path, prev["previous_dsm"])
+                    if dsm_diff:
+                        pc_results["dsm_comparison"] = {
+                            k: v for k, v in dsm_diff.items() if k != "change_map"
+                        }
+                        pc_results["previous_date"] = prev["previous_date"]
+                        # Save change map image for report
+                        change_img = save_change_map(
+                            dsm_diff["change_map"],
+                            str(Path(output_dir) / "_report_thumbs" / "change_map.jpg"),
+                        )
+                        if change_img:
+                            pc_results["change_map_image"] = change_img
+                            if images:
+                                images["change_map"] = change_img
+                        notify("report",
+                               f"Volume change: fill={dsm_diff['fill_volume_m3']:.0f}m\u00b3, "
+                               f"cut={dsm_diff['cut_volume_m3']:.0f}m\u00b3")
+        except ImportError:
+            log.info("point_cloud_ops not available — skipping 3D analysis")
+
         notify("report", f"Generating {preset['report_type']} report")
         report_data = {
             "site_name": site_name,
@@ -281,11 +348,15 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             "oblique_count": classification.oblique_count,
             "platform": classification.platform,
             "gps_bounds": classification.gps_bounds,
-            "ortho_path": downloaded.get("orthophoto.tif"),
-            "dsm_path": downloaded.get("dsm.tif"),
+            "ortho_path": ortho_path,
+            "dsm_path": dsm_path,
             "downloads": downloaded,
             "engine": engine,
             "mipmap_settings": preset.get("mipmap_settings", {}),
+            "photos": photos,
+            "ai_analysis": ai_analysis,
+            "images": images,
+            "pc_results": pc_results,
         }
         report_result = generate_report(preset["report_type"], report_data, output_dir)
         if report_result is None:
@@ -366,10 +437,30 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
 
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # Generate report even in portfolio-only mode
+    # Generate report even in portfolio-only mode (with AI + images)
     report_result = None
     try:
         from report_generator import generate_report
+        photos = working_set.photos
+
+        # AI photo analysis
+        ai_analysis = None
+        try:
+            from report_ai import analyze_photos
+            notify("report", "Analyzing photos with AI...")
+            ai_analysis = analyze_photos(photos, job_type, site_name)
+        except ImportError:
+            log.info("report_ai not available — skipping AI analysis")
+
+        # Prepare images for embedding
+        images = None
+        try:
+            from report_images import prepare_report_images
+            notify("report", "Preparing report images...")
+            images = prepare_report_images(photos, None, None, output_dir)
+        except ImportError:
+            log.info("report_images not available — skipping image embedding")
+
         notify("report", f"Generating {preset['report_type']} report")
         report_data = {
             "site_name": site_name,
@@ -381,6 +472,9 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
             "platform": classification.platform,
             "gps_bounds": classification.gps_bounds,
             "downloads": {},
+            "photos": photos,
+            "ai_analysis": ai_analysis,
+            "images": images,
         }
         report_result = generate_report(preset["report_type"], report_data, output_dir)
         if report_result is None:
