@@ -1,0 +1,76 @@
+{
+  "name": "Zeitview Property Inspection",
+  "company": "Zeitview",
+  "requires_front_bearing": true,
+  "categories": [
+    {
+      "name": "nadir",
+      "label": "Nadir / Overhead",
+      "pitch_min": -95,
+      "pitch_max": -75,
+      "alt_min_ft": 80,
+      "alt_max_ft": 200,
+      "min_count": 4
+    },
+    {
+      "name": "oblique_north",
+      "label": "Oblique North",
+      "pitch_min": -55,
+      "pitch_max": -30,
+      "alt_min_ft": 60,
+      "alt_max_ft": 150,
+      "direction": "front",
+      "min_count": 2
+    },
+    {
+      "name": "oblique_east",
+      "label": "Oblique East",
+      "pitch_min": -55,
+      "pitch_max": -30,
+      "alt_min_ft": 60,
+      "alt_max_ft": 150,
+      "direction": "right",
+      "min_count": 2
+    },
+    {
+      "name": "oblique_south",
+      "label": "Oblique South",
+      "pitch_min": -55,
+      "pitch_max": -30,
+      "alt_min_ft": 60,
+      "alt_max_ft": 150,
+      "direction": "back",
+      "min_count": 2
+    },
+    {
+      "name": "oblique_west",
+      "label": "Oblique West",
+      "pitch_min": -55,
+      "pitch_max": -30,
+      "alt_min_ft": 60,
+      "alt_max_ft": 150,
+      "direction": "left",
+      "min_count": 2
+    },
+    {
+      "name": "facade",
+      "label": "Facade / Low Orbit",
+      "pitch_min": -30,
+      "pitch_max": 5,
+      "alt_max_ft": 60,
+      "min_count": 8,
+      "sort_by_yaw": true
+    },
+    {
+      "name": "detail",
+      "label": "Detail / POI",
+      "pitch_min": -70,
+      "pitch_max": 10,
+      "alt_max_ft": 30,
+      "min_count": 0
+    }
+  ],
+  "exclude_extensions": [".dng"],
+  "rename_pattern": "{site}_{category}_{seq:03d}",
+  "output_structure": "by_category"
+}
