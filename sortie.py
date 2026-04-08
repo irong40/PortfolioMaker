@@ -25,7 +25,11 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import json
 
-from photo_classifier import classify_photos, PIPELINE_AVAILABLE
+from photo_classifier import (
+    classify_photos, PIPELINE_AVAILABLE,
+    list_profiles, load_profile, classify_with_profile, sort_with_profile,
+    compass_to_bearing,
+)
 from odm_presets import JOB_TYPES, get_preset
 from portfolio_service import (
     check_nodeodm, scan_for_job, process_job, portfolio_only, PORTFOLIO_ROOT,
@@ -203,6 +207,8 @@ class PortfolioMakerApp:
             self.threshold_var.set(s["threshold"])
         if s.get("nodeodm_url"):
             self.nodeodm_url_var.set(s["nodeodm_url"])
+        if s.get("client_profile") and hasattr(self, 'profile_var'):
+            self.profile_var.set(s["client_profile"])
 
     def _gather_settings(self):
         """Collect current UI state into a settings dict."""
@@ -213,6 +219,7 @@ class PortfolioMakerApp:
             "site_name": self.site_name_var.get(),
             "threshold": self.threshold_var.get(),
             "nodeodm_url": self.nodeodm_url_var.get(),
+            "client_profile": self.profile_var.get() if hasattr(self, 'profile_var') else "",
             "window_geometry": self.root.geometry(),
         }
 
@@ -361,6 +368,51 @@ class PortfolioMakerApp:
                   font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(anchor="w", pady=(4, 0))
         self.job_type_var.trace_add("write", self._update_job_desc)
         self._update_job_desc()
+
+        # ── Client Profile ──
+        profile_frame = ttk.LabelFrame(self._content, text="Client Profile (optional)", padding=10)
+        profile_frame.pack(fill="x", pady=(0, 8))
+
+        profile_row = ttk.Frame(profile_frame)
+        profile_row.pack(fill="x")
+
+        ttk.Label(profile_row, text="Client:").pack(side="left")
+        self._profile_list = list_profiles()
+        profile_choices = ["None (standard sort)"] + [p[1] for p in self._profile_list]
+        self.profile_var = tk.StringVar(value="None (standard sort)")
+        self._profile_combo = ttk.Combobox(
+            profile_row, textvariable=self.profile_var,
+            values=profile_choices, state="readonly", width=30)
+        self._profile_combo.pack(side="left", padx=(8, 0))
+
+        self._profile_desc_var = tk.StringVar(value="Standard nadir/oblique sort for SAI processing")
+        ttk.Label(profile_frame, textvariable=self._profile_desc_var,
+                  font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(anchor="w", pady=(4, 0))
+
+        # Front bearing (shown when profile requires it)
+        self._bearing_frame = ttk.Frame(profile_frame)
+        ttk.Label(self._bearing_frame, text="Front of structure faces:").pack(side="left")
+        self.bearing_var = tk.StringVar(value="N")
+        bearing_choices = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        self._bearing_combo = ttk.Combobox(
+            self._bearing_frame, textvariable=self.bearing_var,
+            values=bearing_choices, state="readonly", width=5)
+        self._bearing_combo.pack(side="left", padx=(8, 0))
+        ttk.Label(self._bearing_frame,
+                  text="(which direction does the front door face?)",
+                  font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(side="left", padx=(8, 0))
+        # Hidden until a directional profile is selected
+        self.bearing_var.trace_add("write", self._on_bearing_change)
+
+        self._profile_validation_var = tk.StringVar()
+        self._profile_validation_label = ttk.Label(
+            profile_frame, textvariable=self._profile_validation_var,
+            font=(FONT_FAMILY, 9, "bold"), foreground=RED)
+        self._profile_validation_label.pack(anchor="w", pady=(2, 0))
+        self._profile_validation_label.pack_forget()  # hidden until scan
+
+        self.profile_var.trace_add("write", self._on_profile_change)
+        self._profile_result = None
 
     # ── Build: PPK Banner ──
 
@@ -770,6 +822,11 @@ class PortfolioMakerApp:
                                          style="Secondary.TButton")
         self.portfolio_btn.pack(side="left", padx=8)
 
+        self._client_sort_btn = ttk.Button(
+            self._action_frame, text="Sort for Client",
+            command=self._on_client_sort, style="Accent.TButton")
+        # Hidden until a profile is selected and scan is done
+
         self.cancel_btn = ttk.Button(self._action_frame, text="Cancel",
                                       command=self._on_cancel, style="Secondary.TButton")
         self.cancel_btn.pack(side="left", padx=4)
@@ -856,6 +913,91 @@ class PortfolioMakerApp:
             self._job_desc_var.set(f"{preset['description']}  |  Uses {photo_info}")
         except KeyError:
             self._job_desc_var.set("")
+
+    def _get_selected_profile(self):
+        """Return (stem, profile_dict) or (None, None) if no profile selected."""
+        val = self.profile_var.get()
+        if val == "None (standard sort)":
+            return None, None
+        for stem, display in self._profile_list:
+            if display == val:
+                return stem, load_profile(stem)
+        return None, None
+
+    def _on_profile_change(self, *args):
+        """Update profile description and re-validate if scan data exists."""
+        stem, profile = self._get_selected_profile()
+        if profile is None:
+            self._profile_desc_var.set("Standard nadir/oblique sort for SAI processing")
+            self._profile_validation_label.pack_forget()
+            self._bearing_frame.pack_forget()
+            self._profile_result = None
+            if hasattr(self, '_client_sort_btn'):
+                self._client_sort_btn.pack_forget()
+            return
+
+        cats = profile.get("categories", [])
+        cat_summary = ", ".join(
+            f"{c['label']} (min {c.get('min_count', 0)})" for c in cats)
+        self._profile_desc_var.set(f"{profile['name']}: {cat_summary}")
+
+        # Show/hide bearing selector based on profile
+        if profile.get("requires_front_bearing"):
+            self._bearing_frame.pack(fill="x", pady=(4, 0))
+        else:
+            self._bearing_frame.pack_forget()
+
+        # Re-validate against current scan if available
+        if self._classification and self._classification.total > 0:
+            self._run_profile_validation(profile)
+
+    def _on_bearing_change(self, *args):
+        """Re-validate when the front bearing direction changes."""
+        _, profile = self._get_selected_profile()
+        if profile and self._classification and self._classification.total > 0:
+            self._run_profile_validation(profile)
+
+    def _run_profile_validation(self, profile):
+        """Classify scanned photos against profile and show validation."""
+        from photo_classifier import classify_with_profile, compass_to_bearing
+        front_bearing = None
+        if profile.get("requires_front_bearing"):
+            try:
+                front_bearing = compass_to_bearing(self.bearing_var.get())
+            except ValueError:
+                front_bearing = 0
+        pr = classify_with_profile(self._classification, profile,
+                                   front_bearing=front_bearing)
+        self._profile_result = pr
+
+        lines = []
+        for cat in pr.categories:
+            status = "OK" if cat.met else "MISSING"
+            lines.append(f"{cat.label}: {len(cat.photos)} photos [{status}]")
+        if pr.unmatched:
+            lines.append(f"Unmatched: {len(pr.unmatched)} photos")
+
+        if pr.validation_errors:
+            self._profile_validation_var.set(
+                "GAPS: " + " | ".join(pr.validation_errors))
+            self._profile_validation_label.configure(foreground=RED)
+        else:
+            self._profile_validation_var.set(
+                "ALL REQUIREMENTS MET: " + " | ".join(lines))
+            self._profile_validation_label.configure(foreground=GREEN)
+
+        self._profile_validation_label.pack(anchor="w", pady=(2, 0))
+
+        # Show or update client sort button
+        if hasattr(self, '_client_sort_btn'):
+            self._client_sort_btn.pack(side="left", padx=8)
+        # Also log details
+        self._log(f"\n--- {profile['name']} Validation ---")
+        for cat in pr.categories:
+            status = "OK" if cat.met else f"NEED {cat.min_count - len(cat.photos)} MORE"
+            self._log(f"  {cat.label}: {len(cat.photos)} photos - {status}")
+        if pr.unmatched:
+            self._log(f"  Unmatched: {len(pr.unmatched)} photos")
 
     # ── Advanced Toggle ──
 
@@ -1138,6 +1280,11 @@ class PortfolioMakerApp:
                 self._show_results()
                 self.status_var.set(f"Scan complete — {result.total} photos, "
                                      f"{self._working_set.total} selected for {preset['label']}")
+
+                # Run profile validation if a client profile is selected
+                _, profile = self._get_selected_profile()
+                if profile:
+                    self._run_profile_validation(profile)
             except Exception as e:
                 self._log(f"\nError: {e}")
                 self.status_var.set("Error displaying results")
@@ -1300,6 +1447,113 @@ class PortfolioMakerApp:
                         self._log(f"  Nadir:   {wset.nadir_count}")
                         self._log(f"  Oblique: {wset.oblique_count}")
                     self.status_var.set(f"Portfolio sorted — {output_dir}")
+            except Exception as e:
+                self._log(f"\nError: {e}")
+            finally:
+                self._set_running(False)
+
+        self._start_polling(msg_queue, on_done)
+
+
+    # ── Sort for Client (profile-based) ──
+
+    def _on_client_sort(self):
+        """Sort and rename photos according to the selected client profile."""
+        stem, profile = self._get_selected_profile()
+        if profile is None:
+            messagebox.showwarning("No Profile", "Select a client profile first.")
+            return
+
+        if not self._classification or self._classification.total == 0:
+            messagebox.showwarning("No Scan", "Scan photos first.")
+            return
+
+        site = self.site_name_var.get().strip()
+        if not site:
+            messagebox.showerror("Error", "Please enter a site name (used for file renaming).")
+            return
+
+        # Determine output directory
+        custom_out = self.output_var.get().strip()
+        if custom_out:
+            out_dir = custom_out
+        else:
+            out_dir = str(Path(PORTFOLIO_ROOT) / site / stem)
+
+        # Get front bearing if needed
+        front_bearing = None
+        if profile.get("requires_front_bearing"):
+            try:
+                from photo_classifier import compass_to_bearing
+                front_bearing = compass_to_bearing(self.bearing_var.get())
+            except ValueError:
+                messagebox.showerror("Error", "Invalid front bearing direction.")
+                return
+
+        # Confirm with user
+        pr = classify_with_profile(self._classification, profile,
+                                   front_bearing=front_bearing)
+        cat_lines = "\n".join(
+            f"  {c.label}: {len(c.photos)} photos"
+            f"{' (MISSING ' + str(c.min_count - len(c.photos)) + ')' if not c.met else ''}"
+            for c in pr.categories
+        )
+        msg = (
+            f"Sort {self._classification.total} photos for {profile['name']}?\n\n"
+            f"{cat_lines}\n"
+            f"{'Unmatched: ' + str(len(pr.unmatched)) if pr.unmatched else ''}\n\n"
+            f"Files will be copied and renamed to:\n{out_dir}\n\n"
+            f"Rename pattern: {profile.get('rename_pattern', 'N/A')}"
+        )
+        if not messagebox.askyesno("Sort for Client", msg):
+            return
+
+        self._set_running(True)
+        self._clear_log()
+        self.progress_var.set(0)
+        msg_queue = queue.Queue()
+
+        classification = self._classification
+
+        def run():
+            try:
+                def progress(current, total, filename):
+                    msg_queue.put(("progress", current, total))
+
+                pr = sort_with_profile(
+                    classification, profile, out_dir,
+                    site_name=site, copy=True,
+                    progress_callback=progress,
+                    front_bearing=front_bearing)
+                msg_queue.put(("done", pr))
+            except Exception as e:
+                traceback.print_exc()
+                msg_queue.put(("error", str(e)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+        def on_done(pr):
+            try:
+                self.progress_var.set(100)
+                self._log(f"\n--- {pr.profile_name} Sort Complete ---")
+                self._log(f"Output: {out_dir}")
+                for cat in pr.categories:
+                    self._log(f"  {cat.label}: {len(cat.photos)} photos")
+                if pr.unmatched:
+                    self._log(f"  Unmatched: {len(pr.unmatched)} → _unmatched/")
+
+                if pr.validation_errors:
+                    self._log(f"\nWARNING — Missing shots:")
+                    for err in pr.validation_errors:
+                        self._log(f"  {err}")
+                    self.status_var.set(f"Sorted with gaps — review before submitting")
+                else:
+                    self._log(f"\nAll requirements met!")
+                    self.status_var.set(f"Client sort complete — {out_dir}")
+
+                if messagebox.askyesno("Sort Complete",
+                        f"Photos sorted to:\n{out_dir}\n\nOpen folder?"):
+                    os.startfile(out_dir)
             except Exception as e:
                 self._log(f"\nError: {e}")
             finally:

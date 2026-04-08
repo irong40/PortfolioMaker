@@ -27,6 +27,7 @@ def generate_thumbnail(image_path, output_dir, max_size=(800, 600), suffix="_thu
     """
     try:
         from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None  # Allow large orthomosaics
 
         img = Image.open(image_path)
 
@@ -81,6 +82,7 @@ def generate_dsm_preview(dsm_path, output_dir, max_size=(800, 600)):
     try:
         from PIL import Image
         import numpy as np
+        Image.MAX_IMAGE_PIXELS = None
 
         img = Image.open(dsm_path)
         arr = np.array(img, dtype=np.float32)

@@ -1,0 +1,29 @@
+{
+  "name": "Droners.io Aerial Photography",
+  "company": "Droners.io",
+  "categories": [
+    {
+      "name": "overhead",
+      "label": "Overhead",
+      "pitch_min": -95,
+      "pitch_max": -75,
+      "min_count": 4
+    },
+    {
+      "name": "oblique",
+      "label": "Angled Views",
+      "pitch_min": -75,
+      "pitch_max": -20,
+      "min_count": 8
+    },
+    {
+      "name": "detail",
+      "label": "Detail / Ground-Level",
+      "pitch_min": -20,
+      "pitch_max": 10,
+      "min_count": 4
+    }
+  ],
+  "rename_pattern": "{site}_{category}_{seq:03d}",
+  "output_structure": "by_category"
+}

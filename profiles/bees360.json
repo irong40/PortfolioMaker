@@ -1,0 +1,66 @@
+{
+  "name": "Bees360 Property Inspection",
+  "company": "Bees360",
+  "requires_front_bearing": true,
+  "categories": [
+    {
+      "name": "overhead",
+      "label": "Overhead",
+      "pitch_min": -95,
+      "pitch_max": -75,
+      "alt_min_ft": 15,
+      "alt_max_ft": 35,
+      "min_count": 1,
+      "max_count": 1
+    },
+    {
+      "name": "birdseye",
+      "label": "Birdsview",
+      "pitch_min": -55,
+      "pitch_max": -30,
+      "alt_min_ft": 15,
+      "alt_max_ft": 35,
+      "min_count": 8,
+      "sort_by_yaw": true
+    },
+    {
+      "name": "closeup_front",
+      "label": "Closeup Front",
+      "pitch_min": -70,
+      "pitch_max": 0,
+      "alt_max_ft": 20,
+      "direction": "front",
+      "min_count": 5
+    },
+    {
+      "name": "closeup_right",
+      "label": "Closeup Right",
+      "pitch_min": -70,
+      "pitch_max": 0,
+      "alt_max_ft": 20,
+      "direction": "right",
+      "min_count": 5
+    },
+    {
+      "name": "closeup_back",
+      "label": "Closeup Back",
+      "pitch_min": -70,
+      "pitch_max": 0,
+      "alt_max_ft": 20,
+      "direction": "back",
+      "min_count": 5
+    },
+    {
+      "name": "closeup_left",
+      "label": "Closeup Left",
+      "pitch_min": -70,
+      "pitch_max": 0,
+      "alt_max_ft": 20,
+      "direction": "left",
+      "min_count": 5
+    }
+  ],
+  "exclude_extensions": [".dng"],
+  "rename_pattern": "{site}_{category}_{seq:03d}",
+  "output_structure": "by_category"
+}

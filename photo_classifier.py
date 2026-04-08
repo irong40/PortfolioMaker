@@ -463,6 +463,374 @@ def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
             progress_callback(i + 1, len(panorama_sets), folder_name)
 
 
+    # ─── CLIENT PROFILE SYSTEM ─────────────────────────────────────────────────
+
+
+PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
+
+METERS_PER_FOOT = 0.3048
+
+
+def load_profile(name):
+    """Load a client profile JSON by name (without .json extension)."""
+    path = PROFILES_DIR / f"{name}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Profile not found: {path}")
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def list_profiles():
+    """Return list of (filename_stem, display_name) for all available profiles."""
+    profiles = []
+    if PROFILES_DIR.is_dir():
+        for p in sorted(PROFILES_DIR.glob("*.json")):
+            try:
+                with open(p, "r") as f:
+                    data = json.load(f)
+                profiles.append((p.stem, data.get("name", p.stem)))
+            except (json.JSONDecodeError, OSError):
+                profiles.append((p.stem, p.stem))
+    return profiles
+
+
+@dataclass
+class ProfileCategory:
+    """A single category within a client profile classification."""
+    name: str
+    label: str
+    photos: list = field(default_factory=list)
+    min_count: int = 0
+    max_count: int = 0  # 0 = unlimited
+
+    @property
+    def met(self):
+        if self.min_count and len(self.photos) < self.min_count:
+            return False
+        return True
+
+
+@dataclass
+class ProfileResult:
+    """Result of classifying photos against a client profile."""
+    profile_name: str
+    categories: list = field(default_factory=list)  # list of ProfileCategory
+    unmatched: list = field(default_factory=list)    # PhotoMeta not matching any rule
+    total: int = 0
+    all_met: bool = False
+    validation_errors: list = field(default_factory=list)
+
+
+def _alt_meters(photo):
+    """Get relative altitude in meters, preferring relative_altitude over GPS altitude."""
+    if photo.relative_altitude is not None:
+        return photo.relative_altitude
+    return None
+
+
+# ─── COMPASS DIRECTION LOGIC ────────────────────────────────────────────────
+
+# Cardinal directions in degrees (clockwise from North)
+COMPASS_DIRECTIONS = {
+    "N": 0, "NE": 45, "E": 90, "SE": 135,
+    "S": 180, "SW": 225, "W": 270, "NW": 315,
+}
+
+# Relative directions mapped from yaw relative to front-facing direction
+# Front = facing the structure, Back = behind it, etc.
+RELATIVE_SIDES = ["front", "right", "back", "left"]
+
+
+def normalize_angle(angle):
+    """Normalize an angle to 0-360 range."""
+    return angle % 360
+
+
+def yaw_to_relative_side(yaw, front_bearing):
+    """Convert a photo's yaw to a relative side of the structure.
+
+    The photo's yaw tells us which compass direction the camera is pointing.
+    A photo pointing AT the front of the house means the camera is facing
+    the opposite direction of front_bearing (camera faces the wall).
+
+    Actually, for drone inspection photos, the yaw is where the camera
+    is looking FROM, toward the structure. So:
+    - If front of house faces South (180°), a photo taken from the South
+      looking North (yaw ~0°/360°) is a FRONT photo.
+    - A photo taken from the North looking South (yaw ~180°) is a BACK photo.
+
+    We compute: relative_angle = (yaw - front_bearing + 180) % 360
+    Then map to quadrants: 0=front, 90=right, 180=back, 270=left
+
+    Args:
+        yaw: Camera yaw in degrees (0-360, 0=North)
+        front_bearing: Compass bearing the front of the structure faces (0-360)
+
+    Returns:
+        One of: "front", "front_right", "right", "back_right",
+                "back", "back_left", "left", "front_left"
+    """
+    if yaw is None:
+        return "unknown"
+
+    # The camera points toward the structure. If the front faces South (180),
+    # a camera at yaw 0 (pointing North) is shooting the front.
+    # relative = how far clockwise the camera position is from the front.
+    relative = normalize_angle(yaw - front_bearing + 180)
+
+    # 8 sectors of 45 degrees each
+    sector = int((relative + 22.5) % 360 / 45)
+    sides_8 = ["front", "front_right", "right", "back_right",
+               "back", "back_left", "left", "front_left"]
+    return sides_8[sector]
+
+
+def yaw_to_quadrant(yaw, front_bearing):
+    """Map photo yaw to which side of the structure the camera sees.
+
+    Drone yaw = direction camera points. The camera faces the structure.
+    If the front of the house faces South (180°):
+      - Camera yaw 0° (pointing North) → camera is South of house, seeing FRONT
+      - Camera yaw 90° (pointing East) → camera is West of house, seeing RIGHT
+        (standing at front door looking out, the right side is to the West)
+      - Camera yaw 180° (pointing South) → camera is North of house, seeing BACK
+      - Camera yaw 270° (pointing West) → camera is East of house, seeing LEFT
+
+    The camera position is opposite its yaw. Relative position of camera
+    around the structure: camera_pos = (yaw + 180) % 360
+    Then we find which side that corresponds to when facing the front.
+
+    Args:
+        yaw: Camera yaw in degrees (direction camera points)
+        front_bearing: Compass bearing the front of the structure faces
+
+    Returns:
+        One of: "front", "right", "back", "left"
+    """
+    if yaw is None:
+        return "unknown"
+
+    # Camera position is opposite its pointing direction
+    camera_position = normalize_angle(yaw + 180)
+    # How far clockwise is the camera from the front-facing direction?
+    relative = normalize_angle(camera_position - front_bearing)
+    sector = int((relative + 45) % 360 / 90)
+    return RELATIVE_SIDES[sector]
+
+
+def compass_to_bearing(direction):
+    """Convert a compass direction string to degrees.
+
+    Args:
+        direction: "N", "NE", "E", "SE", "S", "SW", "W", "NW" or a number
+
+    Returns:
+        float bearing in degrees (0-360)
+    """
+    direction = str(direction).strip().upper()
+    if direction in COMPASS_DIRECTIONS:
+        return float(COMPASS_DIRECTIONS[direction])
+    try:
+        return float(direction) % 360
+    except ValueError:
+        raise ValueError(f"Invalid compass direction: {direction}")
+
+
+def _matches_category(photo, cat_def, front_bearing=None):
+    """Check if a photo matches a category definition's pitch/altitude/direction rules."""
+    pitch = photo.pitch
+    alt_m = _alt_meters(photo)
+
+    # Pitch filter
+    pitch_min = cat_def.get("pitch_min")
+    pitch_max = cat_def.get("pitch_max")
+    if pitch_min is not None or pitch_max is not None:
+        if pitch is None:
+            return False
+        if pitch_min is not None and pitch < pitch_min:
+            return False
+        if pitch_max is not None and pitch > pitch_max:
+            return False
+
+    # Altitude filter (specified in feet in the profile, compared in meters)
+    alt_min_ft = cat_def.get("alt_min_ft")
+    alt_max_ft = cat_def.get("alt_max_ft")
+    if alt_min_ft is not None or alt_max_ft is not None:
+        if alt_m is None:
+            return False
+        alt_ft = alt_m / METERS_PER_FOOT
+        if alt_min_ft is not None and alt_ft < alt_min_ft:
+            return False
+        if alt_max_ft is not None and alt_ft > alt_max_ft:
+            return False
+
+    # Direction filter (requires front_bearing)
+    direction = cat_def.get("direction")
+    if direction is not None:
+        if front_bearing is None or photo.yaw is None:
+            return False
+        quadrant = yaw_to_quadrant(photo.yaw, front_bearing)
+        if quadrant != direction:
+            return False
+
+    return True
+
+
+def classify_with_profile(result, profile, front_bearing=None):
+    """Re-classify an existing ClassificationResult using a client profile.
+
+    Photos are assigned to the first matching category in order.
+    Photos that match no category go into 'unmatched'.
+
+    Args:
+        result: ClassificationResult from classify_photos()
+        profile: dict loaded from a profile JSON
+        front_bearing: Compass bearing (0-360) the front of the structure faces.
+                       Required for profiles with directional categories.
+                       Can also be a string like "N", "SE", etc.
+
+    Returns:
+        ProfileResult with categories, counts, and validation status
+    """
+    # Convert front_bearing from string if needed
+    if front_bearing is not None and isinstance(front_bearing, str):
+        front_bearing = compass_to_bearing(front_bearing)
+
+    cat_defs = profile.get("categories", [])
+    categories = []
+    for cd in cat_defs:
+        categories.append(ProfileCategory(
+            name=cd["name"],
+            label=cd.get("label", cd["name"]),
+            min_count=cd.get("min_count", 0),
+            max_count=cd.get("max_count", 0),
+        ))
+
+    # Filter out excluded extensions if profile specifies them
+    exclude_exts = {e.lower() for e in profile.get("exclude_extensions", [])}
+    if exclude_exts:
+        photos = [p for p in result.photos if p.path.suffix.lower() not in exclude_exts]
+    else:
+        photos = result.photos
+
+    unmatched = []
+
+    for photo in photos:
+        placed = False
+        for i, cd in enumerate(cat_defs):
+            if _matches_category(photo, cd, front_bearing=front_bearing):
+                categories[i].photos.append(photo)
+                placed = True
+                break
+        if not placed:
+            unmatched.append(photo)
+
+    # Sort bird's-eye categories by yaw if requested
+    for i, cd in enumerate(cat_defs):
+        if cd.get("sort_by_yaw") and categories[i].photos:
+            categories[i].photos.sort(
+                key=lambda p: p.yaw if p.yaw is not None else 999)
+
+    # Validate counts
+    errors = []
+    for cat in categories:
+        if cat.min_count and len(cat.photos) < cat.min_count:
+            errors.append(
+                f"{cat.label}: {len(cat.photos)}/{cat.min_count} "
+                f"(need {cat.min_count - len(cat.photos)} more)")
+        if cat.max_count and len(cat.photos) > cat.max_count:
+            errors.append(
+                f"{cat.label}: {len(cat.photos)}/{cat.max_count} "
+                f"(have {len(cat.photos) - cat.max_count} extra)")
+
+    pr = ProfileResult(
+        profile_name=profile.get("name", "Unknown"),
+        categories=categories,
+        unmatched=unmatched,
+        total=len(photos),
+        all_met=len(errors) == 0,
+        validation_errors=errors,
+    )
+    return pr
+
+
+def sort_with_profile(result, profile, output_dir, site_name="",
+                      copy=True, progress_callback=None, front_bearing=None):
+    """Sort and rename photos according to a client profile.
+
+    Args:
+        result: ClassificationResult from classify_photos()
+        profile: dict loaded from a profile JSON
+        output_dir: Destination folder
+        site_name: Site/address name for rename pattern
+        copy: If True copy, if False move
+        progress_callback: Optional callable(current, total, filename)
+        front_bearing: Compass bearing for the front of the structure.
+                       Required for profiles with directional categories.
+
+    Returns:
+        ProfileResult with categories and transfer info
+    """
+    log = logging.getLogger(__name__)
+    pr = classify_with_profile(result, profile, front_bearing=front_bearing)
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    transfer = shutil.copy2 if copy else shutil.move
+
+    rename_pattern = profile.get("rename_pattern", "{site}_{category}_{seq:03d}")
+    output_structure = profile.get("output_structure", "flat")
+
+    total_photos = sum(len(c.photos) for c in pr.categories) + len(pr.unmatched)
+    done = 0
+
+    # Clean site name for filenames
+    safe_site = site_name.replace(" ", "_").replace("/", "-").replace("\\", "-")
+
+    for cat in pr.categories:
+        if output_structure == "by_category":
+            cat_dir = out / cat.name
+            cat_dir.mkdir(exist_ok=True)
+        else:
+            cat_dir = out
+
+        for seq, photo in enumerate(cat.photos, 1):
+            ext = Path(photo.filename).suffix.lower()
+            new_name = rename_pattern.format(
+                site=safe_site,
+                category=cat.name,
+                seq=seq,
+            )
+            if not new_name.endswith(ext):
+                new_name += ext
+
+            dest = cat_dir / new_name
+            dest, _ = _resolve_collision(dest)
+            try:
+                transfer(photo.path, dest)
+            except (OSError, shutil.Error) as e:
+                log.error(f"Failed to transfer {photo.filename}: {e}")
+
+            done += 1
+            if progress_callback and (done % 50 == 0 or done == total_photos):
+                progress_callback(done, total_photos, new_name)
+
+    # Copy unmatched to separate folder
+    if pr.unmatched:
+        unmatched_dir = out / "_unmatched"
+        unmatched_dir.mkdir(exist_ok=True)
+        for photo in pr.unmatched:
+            dest = unmatched_dir / photo.filename
+            dest, _ = _resolve_collision(dest)
+            try:
+                transfer(photo.path, dest)
+            except (OSError, shutil.Error) as e:
+                log.error(f"Failed to transfer unmatched {photo.filename}: {e}")
+            done += 1
+
+    return pr
+
+
 def filter_photos(result, bbox=None, classification=None):
     """Filter a ClassificationResult to a subset of photos.
 

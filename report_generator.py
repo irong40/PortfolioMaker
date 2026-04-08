@@ -9,6 +9,7 @@ Supports AI-generated narratives (Gemini Vision) and embedded photo thumbnails.
 import os
 import json
 import logging
+from pathlib import Path
 from datetime import datetime
 
 # ─── REPORTLAB IMPORT ──────────────────────────────────────────────────────
@@ -29,14 +30,17 @@ except ImportError:
 
 from report_templates import get_template, TEMPLATES
 
-# ─── BRAND COLORS ──────────────────────────────────────────────────────────
+# ─── SENTINEL AERIAL BRAND ───────────────────────────────────────────────
+# Primary: Safety Orange #FF6B35 | Background: Deep Black #050505
+# Fonts: Saira Condensed (headings), Share Tech Mono (body)
 
 if REPORTLAB_AVAILABLE:
-    SENTINEL_PURPLE = HexColor("#5B2C6F")
-    SENTINEL_DARK = HexColor("#1A0A2E")
-    SENTINEL_MID = HexColor("#AF7AC5")
-    SENTINEL_LIGHT = HexColor("#F4ECF7")
-    ACCENT_GOLD = HexColor("#F4D03F")
+    SAI_ORANGE = HexColor("#FF6B35")
+    SAI_BLACK = HexColor("#050505")
+    SAI_DARK_GREY = HexColor("#1A1A1A")
+    SAI_MID_GREY = HexColor("#4A4A4A")
+    SAI_LIGHT = HexColor("#FFF3ED")
+    SAI_ORANGE_LIGHT = HexColor("#FF8F66")
     LIGHT_GREY = HexColor("#D3D3D3")
     SEVERITY_COLORS = {
         "major": HexColor("#C0392B"),
@@ -50,9 +54,20 @@ if REPORTLAB_AVAILABLE:
         "warning": HexColor("#E67E22"),
     }
 
+# Logo path — search common locations
+LOGO_PATH = None
+for candidate in [
+    Path(__file__).parent / "assets" / "sentinel-logo.png",
+    Path("D:/Projects/sentinel-landing/public/sentinel-logo.png"),
+    Path("D:/Projects/FaithandHarmony/public/assets/landing/sentinel-logo.png"),
+]:
+    if candidate.exists():
+        LOGO_PATH = str(candidate)
+        break
+
 FOOTER_TEXT = (
     "Sentinel Aerial Inspections  |  FAA Part 107 Certified  |  "
-    "Veteran-Owned Small Business  |  Faith & Harmony LLC"
+    "sentinelaerialinspections.com  |  757.843.8772"
 )
 
 REPORT_TYPES = {k: v.title for k, v in TEMPLATES.items()}
@@ -69,17 +84,17 @@ def _get_styles():
     ))
     styles.add(ParagraphStyle(
         "CoverSubtitle", parent=styles["Normal"],
-        fontSize=14, textColor=SENTINEL_MID, alignment=TA_CENTER,
+        fontSize=14, textColor=SAI_ORANGE_LIGHT, alignment=TA_CENTER,
         spaceAfter=6,
     ))
     styles.add(ParagraphStyle(
         "SectionHeader", parent=styles["Heading2"],
-        fontSize=14, textColor=SENTINEL_PURPLE,
+        fontSize=14, textColor=SAI_ORANGE,
         spaceBefore=16, spaceAfter=8,
     ))
     styles.add(ParagraphStyle(
         "SubHeader", parent=styles["Heading3"],
-        fontSize=11, textColor=SENTINEL_DARK,
+        fontSize=11, textColor=SAI_BLACK,
         spaceBefore=10, spaceAfter=4,
     ))
     styles.add(ParagraphStyle(
@@ -101,7 +116,7 @@ def _get_styles():
     ))
     styles.add(ParagraphStyle(
         "RatingLarge", parent=styles["Normal"],
-        fontSize=18, textColor=SENTINEL_PURPLE,
+        fontSize=18, textColor=SAI_ORANGE,
         alignment=TA_CENTER, spaceBefore=8, spaceAfter=8,
     ))
     return styles
@@ -112,11 +127,11 @@ def _get_styles():
 def _footer(canvas_obj, doc):
     canvas_obj.saveState()
     PAGE_W, PAGE_H = letter
-    canvas_obj.setStrokeColor(SENTINEL_MID)
+    canvas_obj.setStrokeColor(SAI_ORANGE)
     canvas_obj.setLineWidth(0.5)
     canvas_obj.line(0.75 * inch, 0.5 * inch, PAGE_W - 0.75 * inch, 0.5 * inch)
     canvas_obj.setFont("Helvetica", 7)
-    canvas_obj.setFillColor(HexColor("#777777"))
+    canvas_obj.setFillColor(SAI_MID_GREY)
     canvas_obj.drawCentredString(PAGE_W / 2.0, 0.35 * inch, FOOTER_TEXT)
     canvas_obj.drawRightString(PAGE_W - 0.75 * inch, 0.35 * inch, f"Page {doc.page}")
     canvas_obj.restoreState()
@@ -126,7 +141,7 @@ def _footer(canvas_obj, doc):
 # Each renderer handles a specific section key or falls through to generic.
 
 def _render_cover(elements, styles, data, template):
-    PAGE_W, _ = letter
+    PAGE_W, PAGE_H = letter
     cover_table = Table(
         [[Paragraph("SENTINEL AERIAL INSPECTIONS", styles["CoverSubtitle"])],
          [Paragraph(template.title, styles["CoverTitle"])],
@@ -136,7 +151,7 @@ def _render_cover(elements, styles, data, template):
         rowHeights=[30, 50, 30, 25],
     )
     cover_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), SENTINEL_DARK),
+        ("BACKGROUND", (0, 0), (-1, -1), SAI_BLACK),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 8),
@@ -146,7 +161,18 @@ def _render_cover(elements, styles, data, template):
     ]))
     elements.append(Spacer(1, 1.5 * inch))
     elements.append(cover_table)
-    elements.append(Spacer(1, 0.5 * inch))
+    elements.append(Spacer(1, 0.75 * inch))
+
+    # Logo between title block and bottom of page
+    if LOGO_PATH and os.path.exists(LOGO_PATH):
+        try:
+            logo = RLImage(LOGO_PATH, width=2.0 * inch, height=2.0 * inch,
+                           kind="proportional")
+            logo.hAlign = "CENTER"
+            elements.append(logo)
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Failed to embed logo: {e}")
+
     elements.append(PageBreak())
 
 
@@ -161,8 +187,8 @@ def _render_executive_summary(elements, styles, section, ai_data):
         colWidths=[6.5 * inch],
     )
     summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), SENTINEL_LIGHT),
-        ("BOX", (0, 0), (-1, -1), 1.5, SENTINEL_PURPLE),
+        ("BACKGROUND", (0, 0), (-1, -1), SAI_LIGHT),
+        ("BOX", (0, 0), (-1, -1), 1.5, SAI_ORANGE),
         ("TOPPADDING", (0, 0), (-1, -1), 10),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
         ("LEFTPADDING", (0, 0), (-1, -1), 12),
@@ -192,7 +218,7 @@ def _render_flight_summary(elements, styles, data):
 
     table = Table(rows, colWidths=[2 * inch, 4.5 * inch])
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), SENTINEL_LIGHT),
+        ("BACKGROUND", (0, 0), (0, -1), SAI_LIGHT),
         ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.5, LIGHT_GREY),
@@ -218,7 +244,7 @@ def _render_deliverables(elements, styles, data):
         rows.append([name, size])
     table = Table(rows, colWidths=[4 * inch, 2.5 * inch])
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), SENTINEL_PURPLE),
+        ("BACKGROUND", (0, 0), (-1, 0), SAI_ORANGE),
         ("TEXTCOLOR", (0, 0), (-1, 0), white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
@@ -357,7 +383,7 @@ def _render_findings_table(elements, styles, section, ai_data):
     col_widths = [0.4 * inch, 0.8 * inch, 3.5 * inch, 1.8 * inch]
     table = Table(rows, colWidths=col_widths, repeatRows=1)
     style_cmds = [
-        ("BACKGROUND", (0, 0), (-1, 0), SENTINEL_PURPLE),
+        ("BACKGROUND", (0, 0), (-1, 0), SAI_ORANGE),
         ("TEXTCOLOR", (0, 0), (-1, 0), white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -400,7 +426,7 @@ def _render_checklist_table(elements, styles, section, ai_data):
 
     table = Table(rows, colWidths=[2.5 * inch, 1.0 * inch, 3.0 * inch], repeatRows=1)
     style_cmds = [
-        ("BACKGROUND", (0, 0), (-1, 0), SENTINEL_PURPLE),
+        ("BACKGROUND", (0, 0), (-1, 0), SAI_ORANGE),
         ("TEXTCOLOR", (0, 0), (-1, 0), white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -459,7 +485,7 @@ def _render_volume_comparison(elements, styles, data, images):
 
     table = Table(rows, colWidths=[2.5 * inch, 4.0 * inch])
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), SENTINEL_LIGHT),
+        ("BACKGROUND", (0, 0), (0, -1), SAI_LIGHT),
         ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.5, LIGHT_GREY),
@@ -508,7 +534,7 @@ def _render_mesh_stats(elements, styles, data):
 
     table = Table(rows, colWidths=[2.5 * inch, 4.0 * inch])
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), SENTINEL_LIGHT),
+        ("BACKGROUND", (0, 0), (0, -1), SAI_LIGHT),
         ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.5, LIGHT_GREY),
