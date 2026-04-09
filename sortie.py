@@ -36,6 +36,7 @@ from portfolio_service import (
 )
 from mipmap_service import check_mipmap
 from ppk_service import detect_rinex, run_ppk_correction
+from drive_delivery import is_authenticated, authenticate, deliver as drive_deliver
 
 # ─── SETTINGS PERSISTENCE ────────────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ class PortfolioMakerApp:
 
         self._classification = None
         self._working_set = None
+        self._last_sort_output = None  # Path to last sort output for delivery
         self._running = False
         self._nodeodm_ok = False
         self._mipmap_ok = False
@@ -826,6 +828,11 @@ class PortfolioMakerApp:
             self._action_frame, text="Sort for Client",
             command=self._on_client_sort, style="Accent.TButton")
         # Hidden until a profile is selected and scan is done
+
+        self._deliver_btn = ttk.Button(
+            self._action_frame, text="Deliver",
+            command=self._on_deliver, style="Secondary.TButton")
+        # Shown after a successful sort; hidden initially
 
         self.cancel_btn = ttk.Button(self._action_frame, text="Cancel",
                                       command=self._on_cancel, style="Secondary.TButton")
@@ -1551,9 +1558,97 @@ class PortfolioMakerApp:
                     self._log(f"\nAll requirements met!")
                     self.status_var.set(f"Client sort complete — {out_dir}")
 
+                # Enable delivery button
+                self._last_sort_output = out_dir
+                self._deliver_btn.pack(side="left", padx=4)
+
                 if messagebox.askyesno("Sort Complete",
                         f"Photos sorted to:\n{out_dir}\n\nOpen folder?"):
                     os.startfile(out_dir)
+            except Exception as e:
+                self._log(f"\nError: {e}")
+            finally:
+                self._set_running(False)
+
+        self._start_polling(msg_queue, on_done)
+
+
+    # ── Google Drive Delivery ──
+
+    def _on_deliver(self):
+        """Upload the last sort output to Google Drive and generate a share link."""
+        if not self._last_sort_output or not Path(self._last_sort_output).exists():
+            messagebox.showwarning("No Output",
+                "No sorted output to deliver. Run a client sort first.")
+            return
+
+        site = self.site_name_var.get().strip() or "Delivery"
+        folder_name = f"SAI — {site}"
+
+        # Check auth
+        if not is_authenticated():
+            self._log("Google Drive: not authenticated — opening browser...")
+            self.status_var.set("Waiting for Google sign-in...")
+            try:
+                authenticate()
+                self._log("Google Drive: authenticated!")
+            except Exception as e:
+                messagebox.showerror("Auth Failed",
+                    f"Could not sign into Google Drive:\n{e}\n\n"
+                    "Make sure google_client_id and google_client_secret "
+                    "are set in sortie_settings.json or as environment variables.")
+                self.status_var.set("Drive auth failed")
+                return
+
+        if not messagebox.askyesno("Deliver to Google Drive",
+                f"Upload all files from:\n{self._last_sort_output}\n\n"
+                f"To Drive folder: \"{folder_name}\"\n"
+                f"A share link will be generated."):
+            return
+
+        self._set_running(True)
+        self._clear_log()
+        self._log(f"Uploading to Google Drive: {folder_name}")
+        self.progress_var.set(0)
+        msg_queue = queue.Queue()
+
+        output_dir = self._last_sort_output
+
+        def run():
+            try:
+                def progress(current, total, filename, pct):
+                    msg_queue.put(("progress", current, total))
+                    msg_queue.put(("stage", "upload",
+                                   f"{current}/{total}: {filename}"))
+
+                result = drive_deliver(
+                    output_dir, folder_name,
+                    progress_callback=progress)
+                msg_queue.put(("done", result))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                msg_queue.put(("error", str(e)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+        def on_done(result):
+            try:
+                self.progress_var.set(100)
+                link = result["share_link"]
+                count = result["file_count"]
+                self._log(f"\n--- Delivery Complete ---")
+                self._log(f"Files uploaded: {count}")
+                self._log(f"Share link: {link}")
+                self.status_var.set("Delivered!")
+
+                # Copy link to clipboard
+                self.root.clipboard_clear()
+                self.root.clipboard_append(link)
+
+                messagebox.showinfo("Delivered",
+                    f"{count} files uploaded to Google Drive.\n\n"
+                    f"Share link (copied to clipboard):\n{link}")
             except Exception as e:
                 self._log(f"\nError: {e}")
             finally:
