@@ -150,6 +150,12 @@ class MissionPlannerDialog(tk.Toplevel):
         self.open_folder_btn.pack(side="left")
         self.open_folder_btn.state(["disabled"])
 
+        self.preview_btn = ttk.Button(btn_frame, text="Preview Mission",
+                                      command=self._on_preview,
+                                      style="Secondary.TButton")
+        self.preview_btn.pack(side="left", padx=(8, 0))
+        self.preview_btn.state(["disabled"])
+
         ttk.Button(btn_frame, text="Close",
                    command=self.destroy,
                    style="Secondary.TButton").pack(side="right")
@@ -192,6 +198,57 @@ class MissionPlannerDialog(tk.Toplevel):
             os.startfile(str(folder))  # Windows-only; Sortie is Windows-targeted
         except OSError as e:
             messagebox.showerror("Open Folder", f"Could not open {folder}: {e}", parent=self)
+
+    def _on_preview(self):
+        """Render an interactive HTML map of the last generated KMZ and open it."""
+        if not self._last_output_path or not self._last_output_path.exists():
+            messagebox.showinfo("No Mission",
+                                "Generate a KMZ first, then click Preview.", parent=self)
+            return
+
+        pipeline_dir = Path(self._settings.get("drone_pipeline_path", DEFAULT_DRONE_PIPELINE_PATH))
+        script_path = pipeline_dir / "mission_preview.py"
+        if not script_path.exists():
+            messagebox.showerror(
+                "mission_preview.py not found",
+                f"Could not find:\n  {script_path}\n\n"
+                "Update drone-pipeline (it ships with mission_preview.py).",
+                parent=self,
+            )
+            return
+
+        out_html = self._last_output_path.with_suffix(".preview.html")
+        argv = [sys.executable, str(script_path), str(self._last_output_path),
+                "--output", str(out_html), "--open"]
+
+        self._set_status("Rendering preview...", color=TEXT_DIM)
+
+        def worker():
+            try:
+                proc = subprocess.run(
+                    argv, capture_output=True, text=True,
+                    cwd=str(pipeline_dir), timeout=60,
+                )
+                self.after(0, self._on_preview_done, proc, out_html)
+            except subprocess.TimeoutExpired:
+                self.after(0, self._set_status, "Preview timed out (>60s)", RED)
+            except Exception as e:
+                self.after(0, self._set_status, f"Preview failed: {e}", RED)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_preview_done(self, proc: subprocess.CompletedProcess, out_html: Path):
+        if proc.returncode != 0:
+            err = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+            self._set_status(f"Preview failed: {err}", color=RED)
+            messagebox.showerror("Preview Failed", err, parent=self)
+            return
+        size_kb = out_html.stat().st_size / 1024 if out_html.exists() else 0
+        self._set_status(
+            f"Preview opened in browser - {out_html.name} ({size_kb:.1f} KB)\n"
+            f"Email to clients as a flight-plan preview.",
+            color=GREEN,
+        )
 
     def _on_generate(self):
         if self._running:
@@ -324,11 +381,13 @@ class MissionPlannerDialog(tk.Toplevel):
         self._last_output_path = actual_path
         size_kb = actual_path.stat().st_size / 1024 if actual_path.exists() else 0
         self._set_status(
-            f"OK — {actual_path.name} ({size_kb:.1f} KB)\n"
-            f"Sideload via WaypointMapKMZInstaller, then check DJI Fly's mission library.",
+            f"OK - {actual_path.name} ({size_kb:.1f} KB)\n"
+            f"Click Preview Mission to validate the flight path, "
+            f"or sideload via WaypointMapKMZInstaller and check DJI Fly's mission library.",
             color=GREEN,
         )
         self.open_folder_btn.state(["!disabled"])
+        self.preview_btn.state(["!disabled"])
 
     def _on_error(self, msg: str):
         self._set_running(False)
