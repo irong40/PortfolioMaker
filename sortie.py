@@ -37,6 +37,7 @@ from portfolio_service import (
 from mipmap_service import check_mipmap
 from ppk_service import detect_rinex, run_ppk_correction
 from drive_delivery import is_authenticated, authenticate, deliver as drive_deliver
+from mission_planner import MissionPlannerDialog
 
 # ─── SETTINGS PERSISTENCE ────────────────────────────────────────────────────
 
@@ -153,6 +154,7 @@ class PortfolioMakerApp:
         self._settings = load_settings()
 
         configure_styles()
+        self._build_menubar()
         self._build_header()
         self._build_status_bar()  # Pack bottom first so canvas doesn't steal its space
         self._build_input_section()
@@ -232,6 +234,21 @@ class PortfolioMakerApp:
         except OSError:
             pass
         self.root.destroy()
+
+    # ── Build: Menu Bar ──
+
+    def _build_menubar(self):
+        menubar = tk.Menu(self.root)
+
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Generate Bees360 Mission...",
+                               command=self._open_mission_planner)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+
+        self.root.config(menu=menubar)
+
+    def _open_mission_planner(self):
+        MissionPlannerDialog(self.root, self._settings, save_settings_cb=save_settings)
 
     # ── Build: Header ──
 
