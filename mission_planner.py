@@ -29,7 +29,7 @@ DEFAULT_OUTPUT_DIR = r"C:\Users\redle.SOULAAN\Documents\drone-pipeline\kml"
 DEFAULT_ALT_FT = "25"
 DEFAULT_ORBIT_RADIUS_FT = "25"
 
-# Sortie color palette (kept in sync with portfolio_maker.py)
+# Sortie color palette (kept in sync with sortie.py)
 SENTINEL_PURPLE = "#5B2C6F"
 SENTINEL_LIGHT = "#F4ECF7"
 ACCENT_GOLD = "#F4D03F"
