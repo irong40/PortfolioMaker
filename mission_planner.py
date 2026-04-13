@@ -29,6 +29,20 @@ DEFAULT_OUTPUT_DIR = r"E:\Sentinel\Missions"
 DEFAULT_ALT_FT = "25"
 DEFAULT_ORBIT_RADIUS_FT = "25"
 
+# Mirror of bees360_kmz.PROPERTY_PRESETS + BEES360_CLEARANCE_FT.
+# Values are (display_label, building_height_ft).
+# Mission altitude = building_height + BEES360_CLEARANCE_FT (30).
+# Orbit radius defaults to altitude (keeps camera framing on centroid at -45 deg pitch).
+BEES360_CLEARANCE_FT = 30
+PROPERTY_PRESETS = [
+    ("— custom (use fields below) —", None),
+    ("Ranch / 1-story  (~12 ft roof → 42 ft alt)", 12),
+    ("2-story  (~25 ft roof → 55 ft alt)", 25),
+    ("3-story  (~35 ft roof → 65 ft alt)", 35),
+    ("Small commercial  (~30 ft → 60 ft alt)", 30),
+    ("Large commercial  (~45 ft → 75 ft alt)", 45),
+]
+
 # Sortie color palette (kept in sync with sortie.py)
 SENTINEL_PURPLE = "#5B2C6F"
 SENTINEL_LIGHT = "#F4ECF7"
@@ -104,22 +118,35 @@ class MissionPlannerDialog(tk.Toplevel):
         params_frame = ttk.LabelFrame(body, text="Mission Parameters", padding=10)
         params_frame.pack(fill="x", pady=(0, 8))
 
-        ttk.Label(params_frame, text="Altitude (ft):").grid(row=0, column=0, sticky="w")
+        # Property Type preset (auto-fills altitude + radius on selection)
+        ttk.Label(params_frame, text="Property Type:").grid(row=0, column=0, sticky="w")
+        self.property_type_var = tk.StringVar(value=PROPERTY_PRESETS[0][0])
+        property_combo = ttk.Combobox(
+            params_frame, textvariable=self.property_type_var,
+            values=[p[0] for p in PROPERTY_PRESETS],
+            state="readonly", width=40,
+        )
+        property_combo.grid(row=0, column=1, columnspan=5, sticky="w", padx=(4, 0))
+        property_combo.bind("<<ComboboxSelected>>", self._on_property_type_changed)
+
+        # Altitude + radius + bearing fields
+        ttk.Label(params_frame, text="Altitude (ft):").grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.alt_var = tk.StringVar(value=DEFAULT_ALT_FT)
-        ttk.Entry(params_frame, textvariable=self.alt_var, width=8).grid(row=0, column=1, sticky="w", padx=(4, 16))
+        ttk.Entry(params_frame, textvariable=self.alt_var, width=8).grid(row=1, column=1, sticky="w", padx=(4, 16), pady=(6, 0))
 
-        ttk.Label(params_frame, text="Orbit Radius (ft):").grid(row=0, column=2, sticky="w")
+        ttk.Label(params_frame, text="Orbit Radius (ft):").grid(row=1, column=2, sticky="w", pady=(6, 0))
         self.radius_var = tk.StringVar(value=DEFAULT_ORBIT_RADIUS_FT)
-        ttk.Entry(params_frame, textvariable=self.radius_var, width=8).grid(row=0, column=3, sticky="w", padx=(4, 16))
+        ttk.Entry(params_frame, textvariable=self.radius_var, width=8).grid(row=1, column=3, sticky="w", padx=(4, 16), pady=(6, 0))
 
-        ttk.Label(params_frame, text="Front Bearing (°, optional):").grid(row=0, column=4, sticky="w")
+        ttk.Label(params_frame, text="Front Bearing (°):").grid(row=1, column=4, sticky="w", pady=(6, 0))
         self.bearing_var = tk.StringVar()
-        ttk.Entry(params_frame, textvariable=self.bearing_var, width=8).grid(row=0, column=5, sticky="w", padx=(4, 0))
+        ttk.Entry(params_frame, textvariable=self.bearing_var, width=8).grid(row=1, column=5, sticky="w", padx=(4, 0), pady=(6, 0))
 
         ttk.Label(params_frame,
-                  text="Defaults match Sortie's bees360.json profile. Front bearing aligns orbit so the first birdseye = front view.",
-                  foreground=TEXT_DIM, font=(FONT_FAMILY, 8), wraplength=540, justify="left").grid(
-            row=1, column=0, columnspan=6, sticky="w", pady=(6, 0))
+                  text="Altitude is above takeoff point. Property Type auto-fills alt = building height + "
+                       f"{BEES360_CLEARANCE_FT} ft clearance (per Bees360 spec). Front bearing aligns orbit so first birdseye = front view.",
+                  foreground=TEXT_DIM, font=(FONT_FAMILY, 8), wraplength=560, justify="left").grid(
+            row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
 
         # Output section
         out_frame = ttk.LabelFrame(body, text="Output", padding=10)
@@ -181,6 +208,17 @@ class MissionPlannerDialog(tk.Toplevel):
             pass
 
     # ── Actions ──
+
+    def _on_property_type_changed(self, _event=None):
+        """Auto-populate altitude and radius fields when user picks a preset."""
+        selected = self.property_type_var.get()
+        for label, height_ft in PROPERTY_PRESETS:
+            if label == selected and height_ft is not None:
+                computed_alt = height_ft + BEES360_CLEARANCE_FT
+                self.alt_var.set(str(computed_alt))
+                self.radius_var.set(str(computed_alt))
+                return
+        # "Custom" selected — leave fields as-is for manual editing
 
     def _browse_output_dir(self):
         initial = self.output_dir_var.get() or DEFAULT_OUTPUT_DIR
