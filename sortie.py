@@ -243,12 +243,106 @@ class PortfolioMakerApp:
         tools_menu = tk.Menu(menubar, tearoff=0)
         tools_menu.add_command(label="Generate Bees360 Mission...",
                                command=self._open_mission_planner)
+        tools_menu.add_command(label="Pull Flight Logs from RC",
+                               command=self._pull_flight_logs)
         menubar.add_cascade(label="Tools", menu=tools_menu)
 
         self.root.config(menu=menubar)
 
     def _open_mission_planner(self):
         MissionPlannerDialog(self.root, self._settings, save_settings_cb=save_settings)
+
+    def _pull_flight_logs(self):
+        """Subprocess drone-pipeline's pull_flight_logs.py; show status in a messagebox."""
+        import subprocess, json as _json, threading
+        from pathlib import Path as _Path
+
+        pipeline_dir = _Path(self._settings.get(
+            "drone_pipeline_path",
+            r"C:\Users\redle.SOULAAN\Documents\drone-pipeline",
+        ))
+        script_path = pipeline_dir / "pull_flight_logs.py"
+        if not script_path.exists():
+            messagebox.showerror(
+                "pull_flight_logs.py not found",
+                f"Could not find:\n  {script_path}\n\nUpdate drone-pipeline.",
+                parent=self.root,
+            )
+            return
+
+        # Non-blocking; show a "working..." toplevel while subprocess runs
+        working = tk.Toplevel(self.root)
+        working.title("Pulling Flight Logs")
+        working.transient(self.root)
+        working.grab_set()
+        working.resizable(False, False)
+        tk.Label(working, text="Reading flight records from RC...\nThis takes a few seconds per log.",
+                 font=(FONT_FAMILY, 10), padx=24, pady=20, bg=BG_COLOR).pack()
+        working.update_idletasks()
+        working.geometry(f"+{self.root.winfo_rootx() + 100}+{self.root.winfo_rooty() + 100}")
+
+        def worker():
+            argv = [sys.executable, str(script_path)]
+            try:
+                proc = subprocess.run(
+                    argv, capture_output=True, text=True,
+                    cwd=str(pipeline_dir), timeout=600,
+                )
+            except subprocess.TimeoutExpired:
+                self.root.after(0, self._pull_logs_done, working,
+                                {"status": "error", "error": "Timed out after 10 min."})
+                return
+            except Exception as e:
+                self.root.after(0, self._pull_logs_done, working,
+                                {"status": "error", "error": str(e)})
+                return
+
+            # The script prints its JSON result on the last non-empty stdout line.
+            payload = None
+            for line in reversed(proc.stdout.strip().splitlines()):
+                line = line.strip()
+                if line.startswith("{"):
+                    try:
+                        payload = _json.loads(line)
+                        break
+                    except _json.JSONDecodeError:
+                        continue
+            if payload is None:
+                payload = {"status": "error",
+                           "error": proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"}
+            self.root.after(0, self._pull_logs_done, working, payload)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _pull_logs_done(self, working_window, payload):
+        try:
+            working_window.grab_release()
+            working_window.destroy()
+        except tk.TclError:
+            pass
+
+        if payload.get("status") != "ok":
+            messagebox.showerror("Pull Flight Logs", payload.get("error", "Unknown error"),
+                                 parent=self.root)
+            return
+
+        copied = payload.get("copied", 0)
+        already = payload.get("already_local", 0)
+        failed = payload.get("failed", 0)
+        size_kb = payload.get("bytes_copied", 0) / 1024
+        dest = payload.get("dest", "")
+
+        lines = [
+            f"Pulled {copied} new log{'s' if copied != 1 else ''} ({size_kb:.1f} KB)",
+            f"{already} already on disk",
+        ]
+        if failed:
+            lines.append(f"{failed} failed")
+        lines.append("")
+        lines.append(f"Filed under: {dest}")
+        lines.append("Drag the contents of the month folder to airdata.com/upload.")
+
+        messagebox.showinfo("Flight Logs Pulled", "\n".join(lines), parent=self.root)
 
     # ── Build: Header ──
 
