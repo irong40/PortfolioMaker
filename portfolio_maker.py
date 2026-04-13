@@ -30,6 +30,7 @@ from portfolio_service import (
     check_nodeodm, scan_for_job, process_job, portfolio_only, PORTFOLIO_ROOT,
 )
 from mipmap_service import check_mipmap
+from mission_planner import MissionPlannerDialog
 
 # ─── SETTINGS PERSISTENCE ────────────────────────────────────────────────────
 
@@ -141,6 +142,7 @@ class PortfolioMakerApp:
         self._settings = load_settings()
 
         configure_styles()
+        self._build_menubar()
         self._build_header()
         self._build_input_section()
         self._build_scan_button()
@@ -206,6 +208,21 @@ class PortfolioMakerApp:
         except OSError:
             pass
         self.root.destroy()
+
+    # ── Build: Menu Bar ──
+
+    def _build_menubar(self):
+        menubar = tk.Menu(self.root)
+
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Generate Bees360 Mission...",
+                               command=self._open_mission_planner)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+
+        self.root.config(menu=menubar)
+
+    def _open_mission_planner(self):
+        MissionPlannerDialog(self.root, self._settings, save_settings_cb=save_settings)
 
     # ── Build: Header ──
 
