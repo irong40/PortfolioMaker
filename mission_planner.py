@@ -142,11 +142,21 @@ class MissionPlannerDialog(tk.Toplevel):
         self.bearing_var = tk.StringVar()
         ttk.Entry(params_frame, textvariable=self.bearing_var, width=8).grid(row=1, column=5, sticky="w", padx=(4, 0), pady=(6, 0))
 
+        # Nadir offset (fine-tune when the auto-detected centroid isn't on the house)
+        ttk.Label(params_frame, text="Nadir Offset N/S (ft):").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.offset_ns_var = tk.StringVar(value="0")
+        ttk.Entry(params_frame, textvariable=self.offset_ns_var, width=8).grid(row=2, column=1, sticky="w", padx=(4, 16), pady=(6, 0))
+
+        ttk.Label(params_frame, text="Nadir Offset E/W (ft):").grid(row=2, column=2, sticky="w", pady=(6, 0))
+        self.offset_ew_var = tk.StringVar(value="0")
+        ttk.Entry(params_frame, textvariable=self.offset_ew_var, width=8).grid(row=2, column=3, sticky="w", padx=(4, 16), pady=(6, 0))
+
         ttk.Label(params_frame,
                   text="Altitude is above takeoff point. Property Type auto-fills alt = building height + "
-                       f"{BEES360_CLEARANCE_FT} ft clearance (per Bees360 spec). Front bearing aligns orbit so first birdseye = front view.",
+                       f"{BEES360_CLEARANCE_FT} ft clearance (per Bees360 spec). Mission center auto-detects "
+                       "the building via OSM; use Nadir Offset (+ = north/east, − = south/west) to nudge when OSM misses.",
                   foreground=TEXT_DIM, font=(FONT_FAMILY, 8), wraplength=560, justify="left").grid(
-            row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
+            row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
 
         # Output section
         out_frame = ttk.LabelFrame(body, text="Output", padding=10)
@@ -319,6 +329,14 @@ class MissionPlannerDialog(tk.Toplevel):
                                      "Front Bearing must be a number (degrees from N).", parent=self)
                 return
 
+        try:
+            offset_ns = float(self.offset_ns_var.get() or "0")
+            offset_ew = float(self.offset_ew_var.get() or "0")
+        except ValueError:
+            messagebox.showerror("Invalid Number",
+                                 "Nadir Offset N/S and E/W must be numbers (ft).", parent=self)
+            return
+
         output_dir = Path(self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR)
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -352,6 +370,10 @@ class MissionPlannerDialog(tk.Toplevel):
         argv += ["--orbit-radius-ft", str(radius_ft)]
         if bearing is not None:
             argv += ["--front-bearing", str(bearing)]
+        if offset_ns:
+            argv += ["--offset-north-ft", str(offset_ns)]
+        if offset_ew:
+            argv += ["--offset-east-ft", str(offset_ew)]
         # Send the generated file to the chosen output dir under the auto-name.
         # We pass --output only if user chose a non-default folder so the script's
         # auto-naming kicks in; otherwise the script writes to drone-pipeline/kml/.
