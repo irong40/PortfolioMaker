@@ -153,8 +153,10 @@ class MissionPlannerDialog(tk.Toplevel):
 
         ttk.Label(params_frame,
                   text="Altitude is above takeoff point. Property Type auto-fills alt = building height + "
-                       f"{BEES360_CLEARANCE_FT} ft clearance (per Bees360 spec). Mission center auto-detects "
-                       "the building via OSM; use Nadir Offset (+ = north/east, − = south/west) to nudge when OSM misses.",
+                       f"{BEES360_CLEARANCE_FT} ft clearance (per Bees360 spec). Mission center auto-detects the "
+                       "target building via Overture Maps (748K Hampton Roads buildings, pre-downloaded) filtered by "
+                       "parcel polygon; falls back to OSM then parcel centroid. Use Nadir Offset (+ = north/east, "
+                       "− = south/west) to nudge when auto-detection misses.",
                   foreground=TEXT_DIM, font=(FONT_FAMILY, 8), wraplength=560, justify="left").grid(
             row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
 
