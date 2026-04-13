@@ -25,7 +25,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 DEFAULT_DRONE_PIPELINE_PATH = r"C:\Users\redle.SOULAAN\Documents\drone-pipeline"
-DEFAULT_OUTPUT_DIR = r"C:\Users\redle.SOULAAN\Documents\drone-pipeline\kml"
+DEFAULT_OUTPUT_DIR = r"E:\Sentinel\Missions"
 DEFAULT_ALT_FT = "25"
 DEFAULT_ORBIT_RADIUS_FT = "25"
 
