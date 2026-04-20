@@ -146,6 +146,7 @@ class PortfolioMakerApp:
         self._classification = None
         self._working_set = None
         self._last_sort_output = None  # Path to last sort output for delivery
+        self._found_videos = []
         self._running = False
         self._nodeodm_ok = False
         self._mipmap_ok = False
@@ -163,6 +164,7 @@ class PortfolioMakerApp:
         self._build_preflight_section()
         self._build_scan_button()
         self._build_results_section()
+        self._build_video_panel()
         self._build_advanced_section()
         self._build_action_buttons()
         self._build_progress_section()
@@ -173,6 +175,7 @@ class PortfolioMakerApp:
 
         # Hide results, actions, and PPK banner until needed
         self._results_frame.pack_forget()
+        self._video_panel.pack_forget()
         self._action_frame.pack_forget()
         self._ppk_frame.pack_forget()
 
@@ -848,6 +851,111 @@ class PortfolioMakerApp:
         ttk.Label(self._results_frame, textvariable=self._output_var,
                   font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(anchor="w", pady=(2, 0))
 
+    # ── Build: Video Panel (hidden until scan finds MP4s) ──
+
+    def _build_video_panel(self):
+        self._video_panel = ttk.LabelFrame(self._content, text="Videos found", padding=8)
+        # Packed on demand by _show_video_panel
+
+        top = ttk.Frame(self._video_panel)
+        top.pack(fill="x")
+
+        self._video_listbox = tk.Listbox(
+            top, height=4, selectmode="extended",
+            font=(FONT_FAMILY, 8), bg=BG_COLOR,
+            relief="flat", borderwidth=1,
+        )
+        self._video_listbox.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(top, orient="vertical",
+                           command=self._video_listbox.yview)
+        sb.pack(side="left", fill="y")
+        self._video_listbox.configure(yscrollcommand=sb.set)
+
+        btn_row = ttk.Frame(self._video_panel)
+        btn_row.pack(fill="x", pady=(6, 0))
+        ttk.Button(
+            btn_row, text="Send to Content Agent",
+            command=self._on_send_to_content_agent,
+            style="Accent.TButton",
+        ).pack(side="left")
+        self._video_queue_label = ttk.Label(
+            btn_row, text="", font=(FONT_FAMILY, 8), foreground=TEXT_DIM)
+        self._video_queue_label.pack(side="left", padx=(10, 0))
+
+    def _scan_videos(self, source_dir: str) -> list[dict]:
+        """Return list of {path, name, has_srt} for every MP4 in source_dir."""
+        found = []
+        src = Path(source_dir)
+        for mp4 in sorted(src.glob("*.mp4")) + sorted(src.glob("*.MP4")):
+            srt = mp4.with_suffix(".SRT")
+            if not srt.exists():
+                srt = mp4.with_suffix(".srt")
+            found.append({
+                "path": str(mp4),
+                "name": mp4.name,
+                "has_srt": srt.exists(),
+                "srt_path": str(srt) if srt.exists() else None,
+            })
+        return found
+
+    def _show_video_panel(self, videos: list[dict]):
+        self._found_videos = videos
+        self._video_listbox.delete(0, "end")
+        for v in videos:
+            suffix = "  [+SRT]" if v["has_srt"] else ""
+            self._video_listbox.insert("end", v["name"] + suffix)
+        # Select all by default
+        self._video_listbox.select_set(0, "end")
+        self._video_queue_label.configure(text="")
+        self._video_panel.pack(
+            in_=self._content, fill="x", pady=(0, 8),
+            before=self._adv_toggle_frame,
+        )
+
+    def _hide_video_panel(self):
+        self._found_videos = []
+        self._video_panel.pack_forget()
+
+    def _on_send_to_content_agent(self):
+        if not self._found_videos:
+            return
+        selected = self._video_listbox.curselection()
+        if not selected:
+            messagebox.showwarning("Nothing selected",
+                "Select at least one video from the list.", parent=self.root)
+            return
+        videos_to_send = [self._found_videos[i] for i in selected]
+
+        queue_dir = SCRIPT_DIR / "video-queue"
+        queue_dir.mkdir(exist_ok=True)
+
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        manifest_path = queue_dir / f"{ts}_job.json"
+
+        site = self.site_name_var.get().strip() or "Unnamed"
+        manifest = {
+            "created": ts,
+            "site": site,
+            "source_dir": self.source_var.get().strip(),
+            "videos": videos_to_send,
+            "targets": ["youtube", "facebook", "website"],
+            "notes": (
+                "Sentinel Aerial footage — edit into a 60-90s highlight reel "
+                "suitable for YouTube/Facebook. Use property_overlay if KML is available."
+            ),
+        }
+
+        import json as _json
+        manifest_path.write_text(_json.dumps(manifest, indent=2))
+
+        self._video_queue_label.configure(
+            text=f"Queued {len(videos_to_send)} video(s) -> video-queue/{manifest_path.name}"
+        )
+        self._log(f"\nVideo manifest written: {manifest_path}")
+        self._log(f"  {len(videos_to_send)} video(s) queued for content pipeline")
+        self._log(f"  Open Claude Code and run /video-use with this manifest to edit + publish.")
+
     # ── Build: Advanced (collapsed) ──
 
     def _build_advanced_section(self):
@@ -912,6 +1020,7 @@ class PortfolioMakerApp:
         self._classification = None
         self._working_set = None
         self._results_frame.pack_forget()
+        self._hide_video_panel()
         self._action_frame.pack_forget()
         self.results_text.config(state="normal")
         self.results_text.delete("1.0", "end")
@@ -1400,6 +1509,18 @@ class PortfolioMakerApp:
                     self._log(f"\nGPS footprint: ~{lat_span:.0f}m x {lon_span:.0f}m")
 
                 self._show_results()
+
+                # Video scan — show panel if any MP4s found alongside photos
+                videos = self._scan_videos(source)
+                if videos:
+                    self._show_video_panel(videos)
+                    self._log(f"\nVideos found: {len(videos)}")
+                    for v in videos:
+                        tag = " [+SRT]" if v["has_srt"] else ""
+                        self._log(f"  {v['name']}{tag}")
+                else:
+                    self._hide_video_panel()
+
                 self.status_var.set(f"Scan complete — {result.total} photos, "
                                      f"{self._working_set.total} selected for {preset['label']}")
 
