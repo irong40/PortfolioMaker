@@ -38,6 +38,7 @@ from mipmap_service import check_mipmap
 from ppk_service import detect_rinex, run_ppk_correction
 from drive_delivery import is_authenticated, authenticate, deliver as drive_deliver
 from mission_planner import MissionPlannerDialog
+from property_highlights import render_highlights, find_matching_kml
 
 # ─── SETTINGS PERSISTENCE ────────────────────────────────────────────────────
 
@@ -245,6 +246,9 @@ class PortfolioMakerApp:
                                command=self._open_mission_planner)
         tools_menu.add_command(label="Pull Flight Logs from RC",
                                command=self._pull_flight_logs)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Property Highlights...",
+                               command=self._open_property_highlights)
         menubar.add_cascade(label="Tools", menu=tools_menu)
 
         self.root.config(menu=menubar)
@@ -1766,6 +1770,269 @@ class PortfolioMakerApp:
                 self._set_running(False)
 
         self._start_polling(msg_queue, on_done)
+
+    def _open_property_highlights(self):
+        source_dir = self._settings.get("source_dir", "")
+        PropertyHighlightsDialog(self.root, source_dir=source_dir)
+
+
+# ─── PROPERTY HIGHLIGHTS DIALOG ─────────────────────────────────────────────
+
+class PropertyHighlightsDialog(tk.Toplevel):
+    SENTINEL_PURPLE = "#5B2C6F"
+    BG_COLOR        = "#F7F5F9"
+    ACCENT_GOLD     = "#F4D03F"
+    TEXT_DIM        = "#7D6B8A"
+    FONT_FAMILY     = "Segoe UI"
+
+    def __init__(self, parent, source_dir=""):
+        super().__init__(parent)
+        self.title("Property Highlights")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.configure(bg=self.BG_COLOR)
+
+        self._cancel_flag = threading.Event()
+        self._thread = None
+
+        self._build_ui(source_dir)
+        self.update_idletasks()
+        self._center()
+
+    def _center(self):
+        self.update_idletasks()
+        pw = self.master.winfo_rootx()
+        py = self.master.winfo_rooty()
+        pw2 = self.master.winfo_width()
+        py2 = self.master.winfo_height()
+        w, h = self.winfo_width(), self.winfo_height()
+        self.geometry(f"+{pw + pw2//2 - w//2}+{py + py2//2 - h//2}")
+
+    def _build_ui(self, source_dir):
+        # ── Purple header ──
+        hdr = tk.Frame(self, bg=self.SENTINEL_PURPLE)
+        hdr.pack(fill="x")
+        tk.Label(
+            hdr, text="Property Highlights Overlay",
+            font=(self.FONT_FAMILY, 14, "bold"),
+            fg="white", bg=self.SENTINEL_PURPLE, pady=10,
+        ).pack()
+
+        body = tk.Frame(self, bg=self.BG_COLOR, padx=18, pady=14)
+        body.pack(fill="both", expand=True)
+
+        lbl_kw = dict(bg=self.BG_COLOR, font=(self.FONT_FAMILY, 9), anchor="w")
+        row = 0
+
+        # Video file
+        tk.Label(body, text="Drone Video (MP4):", **lbl_kw).grid(
+            row=row, column=0, sticky="w", pady=(0, 2))
+        row += 1
+        self._video_var = tk.StringVar()
+        vid_frame = tk.Frame(body, bg=self.BG_COLOR)
+        vid_frame.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+        body.columnconfigure(0, weight=1)
+        vid_entry = ttk.Entry(vid_frame, textvariable=self._video_var, width=44)
+        vid_entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(vid_frame, text="Browse…", command=self._browse_video).pack(
+            side="left", padx=(4, 0))
+        row += 1
+
+        # KML file
+        tk.Label(body, text="Property KML:", **lbl_kw).grid(
+            row=row, column=0, sticky="w", pady=(0, 2))
+        row += 1
+        self._kml_var = tk.StringVar()
+        kml_frame = tk.Frame(body, bg=self.BG_COLOR)
+        kml_frame.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+        kml_entry = ttk.Entry(kml_frame, textvariable=self._kml_var, width=44)
+        kml_entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(kml_frame, text="Browse…", command=self._browse_kml).pack(
+            side="left", padx=(4, 0))
+        row += 1
+
+        # Output file
+        tk.Label(body, text="Output Video:", **lbl_kw).grid(
+            row=row, column=0, sticky="w", pady=(0, 2))
+        row += 1
+        self._out_var = tk.StringVar()
+        out_frame = tk.Frame(body, bg=self.BG_COLOR)
+        out_frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        ttk.Entry(out_frame, textvariable=self._out_var, width=44).pack(
+            side="left", fill="x", expand=True)
+        ttk.Button(out_frame, text="Browse…", command=self._browse_output).pack(
+            side="left", padx=(4, 0))
+        row += 1
+
+        # Options row
+        opts = tk.Frame(body, bg=self.BG_COLOR)
+        opts.grid(row=row, column=0, sticky="w", pady=(0, 10))
+        row += 1
+
+        tk.Label(opts, text="Heading override (° or blank=auto):",
+                 **lbl_kw).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self._heading_var = tk.StringVar()
+        ttk.Entry(opts, textvariable=self._heading_var, width=6).grid(
+            row=0, column=1, padx=(0, 14))
+
+        tk.Label(opts, text="Preview scale:", **lbl_kw).grid(
+            row=0, column=2, sticky="w", padx=(0, 6))
+        self._scale_var = tk.StringVar(value="2")
+        ttk.Combobox(
+            opts, textvariable=self._scale_var,
+            values=["1 (4K)", "2 (half-res)", "4 (quarter-res)"],
+            state="readonly", width=14,
+        ).grid(row=0, column=3, padx=(0, 14))
+
+        self._label_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opts, text="Address label",
+                        variable=self._label_var).grid(row=0, column=4)
+
+        # Progress bar
+        self._progress = ttk.Progressbar(body, mode="determinate", length=440)
+        self._progress.grid(row=row, column=0, sticky="ew", pady=(0, 4))
+        row += 1
+
+        self._status_var = tk.StringVar(value="Ready")
+        tk.Label(body, textvariable=self._status_var,
+                 font=(self.FONT_FAMILY, 8), fg=self.TEXT_DIM,
+                 bg=self.BG_COLOR, anchor="w").grid(
+            row=row, column=0, sticky="w", pady=(0, 8))
+        row += 1
+
+        # Buttons
+        btn_frame = tk.Frame(body, bg=self.BG_COLOR)
+        btn_frame.grid(row=row, column=0, sticky="e")
+        self._run_btn = ttk.Button(btn_frame, text="Run", command=self._run)
+        self._run_btn.pack(side="left", padx=(0, 6))
+        self._cancel_btn = ttk.Button(btn_frame, text="Cancel",
+                                       command=self._cancel, state="disabled")
+        self._cancel_btn.pack(side="left", padx=(0, 6))
+        ttk.Button(btn_frame, text="Close", command=self.destroy).pack(side="left")
+
+        # Pre-fill source dir
+        if source_dir:
+            self._video_var.set(source_dir)
+
+    # ── File pickers ──
+
+    def _browse_video(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Select drone video",
+            filetypes=[("MP4 video", "*.mp4 *.MP4"), ("All files", "*.*")],
+        )
+        if path:
+            self._video_var.set(path)
+            # Auto-match KML
+            matched = find_matching_kml(path)
+            if matched and not self._kml_var.get():
+                self._kml_var.set(matched)
+                self._status_var.set(f"KML auto-matched: {Path(matched).name}")
+            # Auto-set output path
+            if not self._out_var.get():
+                p = Path(path)
+                self._out_var.set(str(p.parent / (p.stem + "_highlights.mp4")))
+
+    def _browse_kml(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Select property KML",
+            filetypes=[("KML files", "*.kml *.KML"), ("All files", "*.*")],
+        )
+        if path:
+            self._kml_var.set(path)
+
+    def _browse_output(self):
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save highlighted video as",
+            defaultextension=".mp4",
+            filetypes=[("MP4 video", "*.mp4")],
+        )
+        if path:
+            self._out_var.set(path)
+
+    # ── Run / Cancel ──
+
+    def _run(self):
+        video = self._video_var.get().strip()
+        kml   = self._kml_var.get().strip()
+        out   = self._out_var.get().strip()
+
+        if not video or not Path(video).is_file():
+            messagebox.showerror("Missing video", "Select a valid drone MP4.", parent=self)
+            return
+        if not kml or not Path(kml).is_file():
+            messagebox.showerror("Missing KML", "Select a valid property KML.", parent=self)
+            return
+        if not out:
+            messagebox.showerror("Missing output", "Specify an output file path.", parent=self)
+            return
+
+        heading = None
+        raw_h = self._heading_var.get().strip()
+        if raw_h:
+            try:
+                heading = float(raw_h)
+            except ValueError:
+                messagebox.showerror("Bad heading",
+                    "Heading must be a number (0-360) or blank.", parent=self)
+                return
+
+        scale_raw = self._scale_var.get()
+        scale_down = int(scale_raw.split()[0])
+
+        self._cancel_flag.clear()
+        self._run_btn.configure(state="disabled")
+        self._cancel_btn.configure(state="normal")
+        self._progress["value"] = 0
+        self._status_var.set("Starting render…")
+
+        def progress_cb(current, total):
+            if total > 0:
+                pct = current / total * 100
+                self._progress["value"] = pct
+                self._status_var.set(f"Frame {current}/{total}  ({pct:.0f}%)")
+                self.update_idletasks()
+
+        def worker():
+            try:
+                result = render_highlights(
+                    video, kml, out,
+                    heading_override=heading,
+                    scale_down=scale_down,
+                    show_label=self._label_var.get(),
+                    progress_cb=progress_cb,
+                    cancel_flag=self._cancel_flag,
+                )
+                self.after(0, self._on_done, result, None)
+            except Exception as exc:
+                self.after(0, self._on_done, None, exc)
+
+        self._thread = threading.Thread(target=worker, daemon=True)
+        self._thread.start()
+
+    def _cancel(self):
+        self._cancel_flag.set()
+        self._status_var.set("Cancelling…")
+        self._cancel_btn.configure(state="disabled")
+
+    def _on_done(self, result, error):
+        self._run_btn.configure(state="normal")
+        self._cancel_btn.configure(state="disabled")
+        if error:
+            self._status_var.set(f"Error: {error}")
+            messagebox.showerror("Render failed", str(error), parent=self)
+        elif result:
+            self._progress["value"] = 100
+            self._status_var.set(f"Done -> {Path(result).name}")
+            messagebox.showinfo(
+                "Done",
+                f"Highlights video saved:\n{result}",
+                parent=self,
+            )
 
 
 # ─── MAIN ───────────────────────────────────────────────────────────────────
