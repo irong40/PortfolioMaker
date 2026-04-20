@@ -884,9 +884,17 @@ class PortfolioMakerApp:
 
     def _scan_videos(self, source_dir: str) -> list[dict]:
         """Return list of {path, name, has_srt} for every MP4 in source_dir."""
-        found = []
         src = Path(source_dir)
-        for mp4 in sorted(src.glob("*.mp4")) + sorted(src.glob("*.MP4")):
+        # Use case-folded name as dedup key (Windows FS is case-insensitive)
+        seen = set()
+        found = []
+        for mp4 in sorted(src.iterdir()):
+            if mp4.suffix.lower() != ".mp4":
+                continue
+            key = mp4.name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
             srt = mp4.with_suffix(".SRT")
             if not srt.exists():
                 srt = mp4.with_suffix(".srt")
