@@ -15,14 +15,14 @@ import os
 import re
 import subprocess
 import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
+from sentinel_core.spatial import haversine, parse_kml, kml_center, METERS_PER_LAT_DEG
+
 # ─── Camera constants (DJI M4T wide camera) ──────────────────────────────────
-BASE_FOCAL_EQUIV   = 24.0    # mm equivalent at widest setting
-BASE_HFOV_DEG      = 82.6    # horizontal FOV at BASE_FOCAL_EQUIV
-METERS_PER_LAT_DEG = 111320.0
+BASE_FOCAL_EQUIV = 24.0    # mm equivalent at widest setting
+BASE_HFOV_DEG    = 82.6    # horizontal FOV at BASE_FOCAL_EQUIV
 
 # ─── Overlay style ─────────────────────────────────────────────────────────
 STROKE_COLOR = (255, 204, 0, 255)   # #FFCC00 opaque
@@ -60,43 +60,6 @@ def parse_srt(srt_path: str) -> list[dict]:
             "focal_len": get(data, "focal_len", BASE_FOCAL_EQUIV),
         })
     return [f for f in frames if not (f["lat"] == 0 and f["lon"] == 0)]
-
-
-# ─── KML parser ──────────────────────────────────────────────────────────────
-
-def parse_kml(kml_path: str) -> dict:
-    """Extract polygon rings and name from KML."""
-    tree = ET.parse(kml_path)
-    NS = "http://www.opengis.net/kml/2.2"
-    polygons, name, description = [], "", ""
-
-    for pm in tree.iter(f"{{{NS}}}Placemark"):
-        el = pm.find(f"{{{NS}}}name")
-        if el is not None and not name:
-            name = (el.text or "").strip()
-        el = pm.find(f"{{{NS}}}description")
-        if el is not None and not description:
-            description = (el.text or "").strip()
-        for coords_el in pm.iter(f"{{{NS}}}coordinates"):
-            ring = []
-            for tok in coords_el.text.strip().split():
-                parts = tok.split(",")
-                if len(parts) >= 2:
-                    try:
-                        ring.append((float(parts[1]), float(parts[0])))  # (lat, lon)
-                    except ValueError:
-                        pass
-            tags = {e.tag for e in pm.iter()}
-            if len(ring) >= 3 and f"{{{NS}}}Polygon" in tags:
-                polygons.append(ring)
-
-    return {"name": name, "description": description, "polygons": polygons}
-
-
-def kml_center(polygon: list) -> tuple:
-    lats = [p[0] for p in polygon]
-    lons = [p[1] for p in polygon]
-    return sum(lats) / len(lats), sum(lons) / len(lons)
 
 
 # ─── Camera / projection ─────────────────────────────────────────────────────
@@ -445,14 +408,6 @@ def find_matching_kml(video_path: str) -> str | None:
         return None
     vid_lat = sum(lats) / len(lats)
     vid_lon = sum(lons) / len(lons)
-
-    def haversine(lat1, lon1, lat2, lon2):
-        R = 6371000
-        phi1, phi2 = math.radians(lat1), math.radians(lat2)
-        dphi = math.radians(lat2 - lat1)
-        dlam = math.radians(lon2 - lon1)
-        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
-        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     best_path, best_dist = None, float("inf")
     if not MISSIONS_DIR.exists():

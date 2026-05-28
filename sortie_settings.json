@@ -1,10 +1,10 @@
 {
-  "source_dir": "F:/DCIM/DJI_001",
-  "output_dir": "E:/Portfolio/BeesTest3",
+  "source_dir": "I:/My Drive/Drone Facility Plans/Training Flights/806_Mead",
+  "output_dir": "E:/Portfolio/Portfolio_Videos",
   "job_type": "property_survey",
-  "site_name": "4221_Quailshire",
+  "site_name": "806_Meads_CT",
   "threshold": "-70",
   "nodeodm_url": "http://localhost:3000",
-  "client_profile": "Bees360 Property Inspection",
-  "window_geometry": "924x800+2623+27"
+  "client_profile": "None (standard sort)",
+  "window_geometry": "798x760+345+106"
 }
