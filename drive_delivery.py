@@ -21,15 +21,28 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 # OAuth client — registered under Faith & Harmony GCP project.
 # drive.file scope only grants access to files this app creates, not the full Drive.
-_CLIENT_CONFIG = {
-    "installed": {
-        "client_id": os.environ["GOOGLE_OAUTH_CLIENT_ID"],
-        "client_secret": os.environ["GOOGLE_OAUTH_CLIENT_SECRET"],
-        "redirect_uris": ["http://localhost:8085/"],
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
+# Built lazily: env vars are only needed for a first-time browser OAuth. Once a token
+# exists at ~/.sortie/drive_token.json it carries its own client_id/secret, so importing
+# this module must never require the env vars (doing so crashed sortie on launch).
+def _client_config():
+    try:
+        client_id = os.environ["GOOGLE_OAUTH_CLIENT_ID"]
+        client_secret = os.environ["GOOGLE_OAUTH_CLIENT_SECRET"]
+    except KeyError as missing:
+        raise RuntimeError(
+            f"Google OAuth credential {missing} is not set. Set google_client_id and "
+            "google_client_secret in sortie_settings.json or as environment variables "
+            "to authorize Google Drive for the first time."
+        ) from None
+    return {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uris": ["http://localhost:8085/"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
     }
-}
 
 
 def _get_credentials():
@@ -43,7 +56,7 @@ def _get_credentials():
         _save_token(creds)
     elif not creds or not creds.valid:
         from google_auth_oauthlib.flow import InstalledAppFlow
-        flow = InstalledAppFlow.from_client_config(_CLIENT_CONFIG, SCOPES)
+        flow = InstalledAppFlow.from_client_config(_client_config(), SCOPES)
         creds = flow.run_local_server(port=8085)
         _save_token(creds)
 
