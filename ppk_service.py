@@ -37,7 +37,7 @@ RTKLIB_DIR = SCRIPT_DIR / "rtklib"
 RNX2RTKP_EXE = RTKLIB_DIR / "rnx2rtkp.exe"
 RTKLIB_DOWNLOAD_URL = (
     "https://github.com/rtklibexplorer/RTKLIB/releases/download/"
-    "b34j/rtklib_2.4.3_b34j_bins.zip"
+    "v2.5.0/RTKLIB_EX_2.5.0.zip"
 )
 
 # NOAA CORS S3 bucket
@@ -384,15 +384,66 @@ def download_cors_rinex(station_id, flight_date, output_dir):
         return ""
 
 
+def download_broadcast_ephemeris(flight_date, output_dir):
+    """Download daily broadcast ephemeris (GPS + GLONASS) from NOAA S3.
+
+    The DJI M4E's own .NAV file is unreliable: it writes GPS weeks modulo
+    1024 (records appear dated 2006) and 4-line GLONASS records under a
+    RINEX 3.05 header (which requires 5), desyncing RTKLib's parser. The
+    NOAA daily brdc files avoid both problems.
+
+    File path format: rinex/YYYY/DDD/brdcDDD0.YYn.gz (GPS), .YYg.gz (GLONASS)
+
+    Returns list of downloaded nav file paths (may be empty on failure).
+    """
+    import gzip
+    doy = flight_date.timetuple().tm_yday
+    year = flight_date.year
+    yy = year % 100
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    nav_files = []
+    for suffix in ("n", "g"):  # n = GPS, g = GLONASS
+        filename = f"brdc{doy:03d}0.{yy:02d}{suffix}"
+        nav_path = out_dir / filename
+        if nav_path.exists():
+            log.info(f"Broadcast ephemeris already downloaded: {nav_path}")
+            nav_files.append(str(nav_path))
+            continue
+
+        gz_path = out_dir / f"{filename}.gz"
+        url = f"{CORS_S3_BASE}/rinex/{year}/{doy:03d}/{filename}.gz"
+        log.info(f"Downloading broadcast ephemeris: {url}")
+        try:
+            urllib.request.urlretrieve(url, str(gz_path))
+            with gzip.open(str(gz_path), "rb") as gz_in:
+                with open(str(nav_path), "wb") as out:
+                    out.write(gz_in.read())
+            gz_path.unlink(missing_ok=True)
+            nav_files.append(str(nav_path))
+        except Exception as e:
+            log.warning(f"Broadcast ephemeris download failed for {filename}: {e}")
+            gz_path.unlink(missing_ok=True)
+
+    return nav_files
+
+
 # MRK file parser (DJI timestamp marks)
 
 def parse_mrk_file(mrk_path):
     """Parse DJI Timestamp.MRK file to get photo capture timestamps.
 
-    MRK format (space-separated):
+    M4E format (tab-separated, week in brackets):
+        index  GPS_seconds  [GPS_week]  N_offset  E_offset  V_offset  lat  lon ...
+    Legacy format (space-separated):
         index  GPS_week  GPS_seconds  latitude  longitude  altitude  ...
 
-    Returns dict mapping 1-based photo index to GPS timestamp.
+    Timestamps are kept in GPST (no leap-second conversion) to match
+    parse_rtklib_pos, which reads rnx2rtkp output in GPST.
+
+    Returns dict mapping photo sequence index to GPS timestamp.
     """
     marks = {}
     try:
@@ -406,13 +457,16 @@ def parse_mrk_file(mrk_path):
                     continue
                 try:
                     idx = int(parts[0])
-                    gps_week = int(parts[1])
-                    gps_sow = float(parts[2])
+                    if parts[2].startswith("["):
+                        # M4E: seconds-of-week first, then [week]
+                        gps_sow = float(parts[1])
+                        gps_week = int(parts[2].strip("[]"))
+                    else:
+                        gps_week = int(parts[1])
+                        gps_sow = float(parts[2])
                     # GPS epoch: Jan 6, 1980
                     gps_epoch = datetime(1980, 1, 6, tzinfo=timezone.utc)
                     ts = gps_epoch + timedelta(weeks=gps_week, seconds=gps_sow)
-                    # Leap seconds (GPS to UTC): 18 as of 2024
-                    ts = ts - timedelta(seconds=18)
                     marks[idx] = ts
                 except (ValueError, IndexError):
                     continue
@@ -573,7 +627,8 @@ def run_rnx2rtkp(rover_obs, base_obs, nav_file, output_dir, config_path=None):
     Args:
         rover_obs: Path to rover (drone) RINEX OBS file
         base_obs: Path to base station RINEX OBS file
-        nav_file: Path to navigation (broadcast ephemeris) file
+        nav_file: Path to navigation (broadcast ephemeris) file,
+            or a list of paths (e.g. separate GPS and GLONASS files)
         output_dir: Where to write the .pos solution file
         config_path: Optional path to RTKLib config file
 
@@ -589,13 +644,14 @@ def run_rnx2rtkp(rover_obs, base_obs, nav_file, output_dir, config_path=None):
         config_path = str(out_dir / "ppk_config.conf")
         _write_rtklib_config(config_path)
 
+    nav_files = [nav_file] if isinstance(nav_file, str) else list(nav_file)
     cmd = [
         exe,
         "-k", config_path,
         "-o", str(pos_file),
         rover_obs,
         base_obs,
-        nav_file,
+        *nav_files,
     ]
 
     log.info(f"Running rnx2rtkp: {' '.join(cmd)}")
@@ -639,14 +695,30 @@ def match_solutions_to_photos(solutions, mrk_marks, photo_paths, tolerance_ms=50
     if not solutions or not mrk_marks:
         return {}
 
+    # MRK indices can skip numbers (e.g. when the RINEX capture event takes
+    # a slot in the DJI file counter), so positional photo_paths[idx-1]
+    # misaligns. Join on the 4-digit sequence number in the DJI filename
+    # when every photo has one; fall back to positional order otherwise.
+    seq_re = re.compile(r"_(\d{4})[_.]")
+    by_seq = {}
+    for p in photo_paths:
+        m = seq_re.search(Path(p).name)
+        if m:
+            by_seq[int(m.group(1))] = p
+    use_seq = len(by_seq) == len(photo_paths)
+
     matches = {}
     tolerance = timedelta(milliseconds=tolerance_ms)
 
     for idx, mrk_ts in sorted(mrk_marks.items()):
-        if idx < 1 or idx > len(photo_paths):
+        if use_seq:
+            photo_path = by_seq.get(idx)
+        elif 1 <= idx <= len(photo_paths):
+            photo_path = photo_paths[idx - 1]
+        else:
+            photo_path = None
+        if photo_path is None:
             continue
-
-        photo_path = photo_paths[idx - 1]
         best_sol = None
         best_diff = timedelta.max
 
@@ -831,12 +903,17 @@ def run_ppk_correction(rinex, source_dir=None, progress_callback=None):
         return result
 
     # Step 7: Run rnx2rtkp
-    nav = rinex.nav_file
+    # Prefer NOAA broadcast ephemeris — the M4E's own .NAV file has a GPS
+    # week-rollover bug and malformed GLONASS records that break RTKLib.
+    emit("rtklib", "Downloading broadcast ephemeris...")
+    nav = download_broadcast_ephemeris(flight_date, str(work_dir))
     if not nav:
-        emit("rtklib", "No navigation file — downloading broadcast ephemeris...")
-        # TODO: auto-download broadcast ephemeris from IGS
-        result.error = "No navigation file found and auto-download not yet implemented"
-        return result
+        if rinex.nav_file:
+            emit("rtklib", "Broadcast download failed — falling back to drone NAV file")
+            nav = rinex.nav_file
+        else:
+            result.error = "No navigation data: broadcast download failed and no drone NAV file"
+            return result
 
     emit("rtklib", "Running PPK processing...")
     pos_file = run_rnx2rtkp(rinex.obs_file, cors_obs, nav, str(work_dir))
@@ -866,14 +943,31 @@ def run_ppk_correction(rinex, source_dir=None, progress_callback=None):
 
     matches = match_solutions_to_photos(solutions, mrk_marks, photo_paths)
 
-    # Step 10: Update EXIF
-    emit("exif", f"Updating coordinates for {len(matches)} photos...")
+    # Step 10: Update EXIF — fixed (Q=1) solutions only. Unconverged float
+    # solutions carry ambiguity bias (observed ~30 m vertical on short
+    # flights), which is worse than the drone's raw GPS.
+    fixed_matches = {p: s for p, s in matches.items() if s.fix_quality == 1}
+    skipped_float = len(matches) - len(fixed_matches)
+    if not fixed_matches:
+        result.error = (
+            f"No fixed (Q=1) PPK solutions matched photos "
+            f"({result.fix_rate:.0%} fix rate, {skipped_float} float skipped) — "
+            "keeping raw GPS coordinates. Short flights may not converge; "
+            "fly longer or skip PPK for this job."
+        )
+        return result
+
+    emit("exif", (
+        f"Updating coordinates for {len(fixed_matches)} photos"
+        + (f" ({skipped_float} float-only skipped)" if skipped_float else "")
+        + "..."
+    ))
     corrected = 0
-    for i, (photo_path, sol) in enumerate(matches.items()):
+    for i, (photo_path, sol) in enumerate(fixed_matches.items()):
         if update_photo_exif(photo_path, sol.latitude, sol.longitude, sol.altitude):
             corrected += 1
-        if progress_callback and ((i + 1) % 50 == 0 or (i + 1) == len(matches)):
-            progress_callback("exif", f"Updated {i + 1}/{len(matches)} photos")
+        if progress_callback and ((i + 1) % 50 == 0 or (i + 1) == len(fixed_matches)):
+            progress_callback("exif", f"Updated {i + 1}/{len(fixed_matches)} photos")
 
     result.photos_corrected = corrected
     result.success = corrected > 0
