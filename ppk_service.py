@@ -167,6 +167,11 @@ def _extract_approx_position_from_obs(obs_path):
                 if "APPROX POSITION XYZ" in line:
                     parts = line.split()
                     x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+                    # DJI M4E writes 0,0,0 when the receiver had no fix at
+                    # header time. Reject any point not near Earth's surface
+                    # (~6371 km radius) so callers fall back to photo GPS.
+                    if math.sqrt(x * x + y * y + z * z) < 6.0e6:
+                        return None, None
                     # ECEF to LLA (approximate)
                     a = 6378137.0
                     e2 = 0.00669437999014
