@@ -4,7 +4,7 @@ Sortie — ODM Processing Presets (ODM 3.5.6)
 Maps job types to NodeODM processing options, photo filters,
 download targets, and report templates.
 
-Hardware target: i7-14700F, RTX 5060 Ti 12GB, 32GB RAM
+Hardware target: i7-14700F, RTX 5070 12GB, 32GB RAM
 Camera: DJI M4E Wide (mechanical shutter, ~2.2 cm/px GSD at 200ft ACL)
 
 Each preset is tuned for its specific deliverable and use case.

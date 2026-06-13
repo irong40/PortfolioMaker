@@ -6,6 +6,7 @@ No GUI dependency — called by sortie.py or CLI.
 """
 
 import os
+import sys
 import json
 import logging
 from pathlib import Path
@@ -93,6 +94,23 @@ def write_site_info(output_dir, site_name, job_type):
     return str(info_path)
 
 
+def _nodeodm_recovery():
+    """Re-fire the Windows keep-alive task that boots WSL -> docker -> NodeODM.
+
+    The 'nodeodm-wsl' scheduled task holds a persistent WSL session; if the
+    distro was shut down mid-job, this brings NodeODM back and the task
+    auto-resumes. No-op off Windows or if the scheduled task doesn't exist.
+    """
+    if sys.platform != "win32":
+        return
+    import subprocess
+    subprocess.run(
+        ["schtasks", "/run", "/tn", "nodeodm-wsl"],
+        capture_output=True, timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+
 def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
                        base_url=None, poll_interval=30, max_hours=6,
                        progress_callback=None, cancel_event=None):
@@ -109,7 +127,8 @@ def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
 
     info = poll_task(url, task_uuid, poll_interval=poll_interval,
                      max_hours=max_hours, progress_callback=progress_callback,
-                     cancel_event=cancel_event)
+                     cancel_event=cancel_event,
+                     recovery_hook=_nodeodm_recovery)
 
     if info is None:
         return None, "Task timed out"
