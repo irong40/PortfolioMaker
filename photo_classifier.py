@@ -389,8 +389,67 @@ def sort_photos(result, copy=True, progress_callback=None):
     return result
 
 
+# Per-set stitch timeout. cv2.Stitcher on a 34-photo sphere set normally
+# finishes in a few minutes; past this it has hung or is thrashing swap.
+STITCH_TIMEOUT_SECONDS = 900
+
+_WORKER_PATH = Path(__file__).resolve().parent / "pano_stitch_worker.py"
+
+
+def _stitch_one_set(ps, output_path):
+    """Stitch a single PanoramaSet in a worker subprocess.
+
+    cv2.Stitcher peaks at several GB per set and CPython/OpenCV never
+    return that heap to the OS, so the work runs in a short-lived
+    subprocess and the memory comes back when it exits.
+
+    Returns a result dict: {"ok": bool, "error"/"width"/"height": ...}
+    """
+    import subprocess
+    import tempfile
+
+    job = {
+        "photos": ps.photos,
+        "output_path": str(output_path),
+        "max_width": 2000,
+    }
+    job_file = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False) as f:
+            json.dump(job, f)
+            job_file = f.name
+
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        proc = subprocess.run(
+            [sys.executable, str(_WORKER_PATH), job_file],
+            capture_output=True, text=True,
+            timeout=STITCH_TIMEOUT_SECONDS,
+            creationflags=creationflags,
+        )
+        try:
+            return json.loads(proc.stdout.strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError):
+            return {"ok": False,
+                    "error": f"stitch worker crashed (exit {proc.returncode})"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False,
+                "error": f"stitch timed out after {STITCH_TIMEOUT_SECONDS}s"}
+    except OSError as e:
+        return {"ok": False, "error": f"could not start stitch worker: {e}"}
+    finally:
+        if job_file:
+            try:
+                os.unlink(job_file)
+            except OSError:
+                pass
+
+
 def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
     """Stitch each panorama set and save to output_dir.
+
+    Each set is stitched in its own subprocess (see _stitch_one_set) so
+    OpenCV's multi-GB peak is isolated and returned to the OS per set.
 
     Args:
         panorama_sets: List of PanoramaSet objects
@@ -399,15 +458,6 @@ def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
     """
     log = logging.getLogger(__name__)
 
-    try:
-        import cv2
-        cv2.ocl.setUseOpenCL(False)
-    except ImportError:
-        log.warning("OpenCV not installed — skipping panorama stitching")
-        for ps in panorama_sets:
-            ps.stitch_error = "OpenCV not installed"
-        return
-
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -415,45 +465,26 @@ def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
         folder_name = Path(ps.folder).name
         log.info(f"Stitching panorama {i + 1}/{len(panorama_sets)}: {folder_name} ({ps.photo_count} photos)")
 
-        images = []
-        for photo_path in ps.photos:
-            img = cv2.imread(photo_path)
-            if img is None:
-                continue
-            h, w = img.shape[:2]
-            if w > 2000:
-                scale = 2000 / w
-                img = cv2.resize(img, (int(w * scale), int(h * scale)))
-            images.append(img)
-
-        if len(images) < 2:
-            ps.stitch_error = f"Only {len(images)} readable images"
-            log.warning(f"  Skipping {folder_name}: {ps.stitch_error}")
-            continue
-
-        stitcher = cv2.Stitcher.create(cv2.Stitcher_PANORAMA)
-        status, pano = stitcher.stitch(images)
-
-        if status != cv2.Stitcher_OK:
-            errors = {
-                cv2.Stitcher_ERR_NEED_MORE_IMGS: "not enough overlap",
-                cv2.Stitcher_ERR_HOMOGRAPHY_EST_FAIL: "homography failed",
-                cv2.Stitcher_ERR_CAMERA_PARAMS_ADJUST_FAIL: "camera params failed",
-            }
-            ps.stitch_error = errors.get(status, f"unknown error {status}")
-            log.warning(f"  Failed {folder_name}: {ps.stitch_error}")
-            continue
-
         output_path = out / f"{folder_name}_panorama.jpg"
-        cv2.imwrite(str(output_path), pano, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        result = _stitch_one_set(ps, output_path)
+
+        if not result.get("ok"):
+            ps.stitch_error = result.get("error", "unknown error")
+            log.warning(f"  Failed {folder_name}: {ps.stitch_error}")
+            if ps.stitch_error == "OpenCV not installed":
+                log.warning("OpenCV not installed — skipping panorama stitching")
+                for remaining in panorama_sets[i:]:
+                    remaining.stitch_error = "OpenCV not installed"
+                return
+            continue
+
         ps.stitched_path = str(output_path)
-        log.info(f"  Saved: {output_path.name} ({pano.shape[1]}x{pano.shape[0]})")
+        log.info(f"  Saved: {output_path.name} ({result['width']}x{result['height']})")
 
         # Copy to central panorama gallery for DroneInvoice uploads
         pano_gallery = Path(os.environ.get("PANO_GALLERY", r"E:\Portfolio\_Panoramas"))
         try:
             pano_gallery.mkdir(parents=True, exist_ok=True)
-            import shutil
             shutil.copy2(str(output_path), str(pano_gallery / output_path.name))
             log.info(f"  Copied to gallery: {pano_gallery / output_path.name}")
         except OSError as e:

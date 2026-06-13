@@ -31,16 +31,23 @@ def generate_thumbnail(image_path, output_dir, max_size=(800, 600), suffix="_thu
 
         img = Image.open(image_path)
 
+        # JPEG fast path: decode at reduced scale (1/2..1/8). A 600 MP
+        # stitched pano decodes to ~9 MP instead of ~1.8 GB of pixels.
+        img.draft("RGB", max_size)
+
         # Handle 16-bit TIFF (orthomosaic, DSM)
         if img.mode in ("I;16", "I"):
             import numpy as np
-            arr = np.array(img, dtype=np.float32)
-            # Normalize to 0-255
+            # Single float32 buffer with in-place math — these rasters can
+            # be huge, so avoid the float64 intermediates of plain ufuncs
+            arr = np.asarray(img)
             arr_min, arr_max = arr.min(), arr.max()
             if arr_max > arr_min:
-                arr = ((arr - arr_min) / (arr_max - arr_min) * 255).astype("uint8")
+                arr = np.subtract(arr, arr_min, dtype=np.float32)
+                np.multiply(arr, 255.0 / float(arr_max - arr_min), out=arr)
+                arr = arr.astype("uint8")
             else:
-                arr = (arr * 0).astype("uint8")
+                arr = np.zeros(arr.shape, dtype="uint8")
             img = Image.fromarray(arr)
 
         if img.mode in ("RGBA", "P", "LA", "F"):
@@ -87,14 +94,29 @@ def generate_dsm_preview(dsm_path, output_dir, max_size=(800, 600)):
         img = Image.open(dsm_path)
         arr = np.array(img, dtype=np.float32)
 
-        # Remove nodata (common: -9999, 0, very negative)
-        valid = arr[arr > -9000]
+        # Percentiles from a strided sample — the distribution is all we
+        # need, no full-size copy of the valid mask
+        sample = arr[::4, ::4]
+        valid = sample[sample > -9000]
         if len(valid) == 0:
-            return None
+            valid = arr[arr > -9000]
+            if len(valid) == 0:
+                return None
 
         vmin, vmax = np.percentile(valid, [2, 98])
-        arr = np.clip(arr, vmin, vmax)
-        normalized = ((arr - vmin) / (vmax - vmin) * 255).astype("uint8")
+        if vmax <= vmin:
+            return None
+        np.clip(arr, vmin, vmax, out=arr)
+        np.subtract(arr, vmin, out=arr)
+        np.multiply(arr, 255.0 / (vmax - vmin), out=arr)
+        normalized = arr.astype("uint8")
+        del arr
+
+        # Downscale BEFORE colorizing — the colormap is per-pixel, so the
+        # result is identical and we skip a full-size 3-channel copy
+        gray = Image.fromarray(normalized)
+        gray.thumbnail(max_size, Image.LANCZOS)
+        normalized = np.asarray(gray)
 
         # Apply a simple elevation colormap (blue=low → green=mid → red=high)
         colored = np.zeros((*normalized.shape, 3), dtype="uint8")
@@ -103,7 +125,6 @@ def generate_dsm_preview(dsm_path, output_dir, max_size=(800, 600)):
         colored[..., 2] = 255 - normalized  # Blue = low elevation
 
         out_img = Image.fromarray(colored)
-        out_img.thumbnail(max_size, Image.LANCZOS)
 
         out_path = Path(output_dir) / "dsm_elevation_preview.jpg"
         os.makedirs(output_dir, exist_ok=True)
