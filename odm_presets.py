@@ -26,12 +26,15 @@ JOB_TYPES = [
 
 # ── Shared option blocks ────────────────────────────────────────────────────
 
-# Split-merge: keeps each submodel within 12GB VRAM.
+# Split-merge: keeps each submodel's memory footprint bounded.
 # split-overlap 250m ensures generous blending zone to minimize seam artifacts.
+# No sm-cluster: pointing it at the same single node (localhost:3000,
+# maxParallelTasks=1) just upload-churns every submodel against the parent
+# task's occupied slot ("Delayed task limit reached" loop) before ODM falls
+# back to local processing anyway. Submodels process locally, sequentially.
 _SPLIT_MERGE = [
     {"name": "split", "value": 200},
     {"name": "split-overlap", "value": 250},
-    {"name": "sm-cluster", "value": "http://localhost:3000"},
 ]
 
 # Deliverable output options — COG for QGIS/web, overviews for fast display

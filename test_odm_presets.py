@@ -40,7 +40,9 @@ class TestPresets:
             option_names = {o["name"] for o in preset["odm_options"]}
             assert "split" in option_names, f"{name} missing split option"
             assert "split-overlap" in option_names, f"{name} missing split-overlap"
-            assert "sm-cluster" in option_names, f"{name} missing sm-cluster"
+            # sm-cluster must NOT be set: on a single node it just churns
+            # uploads against the parent task's slot (see _SPLIT_MERGE)
+            assert "sm-cluster" not in option_names, f"{name} should not set sm-cluster"
 
     def test_split_value_is_reasonable(self):
         for name, preset in PRESETS.items():
