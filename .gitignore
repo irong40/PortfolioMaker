@@ -5,3 +5,5 @@ logs/
 
 # runtime job queue output
 video-queue/
+reel-queue/
+music-pool/
