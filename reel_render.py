@@ -334,6 +334,9 @@ def build_assembly_cmd(plan: list[dict], clip_audio: dict, card_pngs: dict,
     cmd += ["-filter_complex", ";".join(filters),
             "-map", "[vout]", "-map", "[aout]",
             "-c:v", "hevc_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "22",
+            # pin 4:2:0 main profile — without this the graph negotiates 4:4:4,
+            # which most players/hardware decoders cannot play
+            "-pix_fmt", "yuv420p", "-profile:v", "main",
             "-c:a", "aac", "-b:a", "192k",
             "-t", f"{total:.3f}", "-movflags", "+faststart", str(out_path)]
     return cmd
@@ -344,11 +347,14 @@ def derive_cut(master: str, out_path: str, kind: str) -> list[str]:
     if kind == "web_1080p":
         vf = "scale=1920:1080"
     elif kind == "vertical_916":
-        vf = f"crop=ih*9/16:ih,scale=1080:1920"
+        # even crop width keeps 4:2:0 chroma alignment
+        vf = "crop='trunc(ih*9/16/2)*2':ih,scale=1080:1920"
     else:
         raise ValueError(f"unknown cut {kind!r}")
     return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-i", str(master),
-            "-vf", vf, "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23",
+            "-vf", vf + ",format=yuv420p",
+            "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "23",
+            "-profile:v", "high",
             "-c:a", "copy", "-movflags", "+faststart", str(out_path)]
 
 

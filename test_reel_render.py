@@ -171,6 +171,13 @@ class TestAssemblyCmd:
                                  self.CARDS, "out.mp4", music_track=None)
         assert cmd.count("anullsrc=r=48000:cl=stereo") == 3
 
+    def test_master_pins_yuv420p(self):
+        """Regression: unpinned pix_fmt negotiated to 4:4:4, unplayable in most players."""
+        cmd = build_assembly_cmd(self.PLAN, {"a.mp4": True, "b.mp4": True},
+                                 self.CARDS, "out.mp4", music_track=None)
+        assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
+        assert cmd[cmd.index("-profile:v") + 1] == "main"
+
     def test_output_duration_capped(self):
         cmd = build_assembly_cmd(self.PLAN, {"a.mp4": True, "b.mp4": True},
                                  self.CARDS, "out.mp4", music_track=None)
@@ -181,12 +188,20 @@ class TestAssemblyCmd:
 class TestDeriveCut:
     def test_web_1080p(self):
         cmd = derive_cut("master.mp4", "web.mp4", "web_1080p")
-        assert "scale=1920:1080" in cmd
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "scale=1920:1080" in vf
 
     def test_vertical_916(self):
         cmd = derive_cut("master.mp4", "vert.mp4", "vertical_916")
         vf = cmd[cmd.index("-vf") + 1]
-        assert "crop=ih*9/16:ih" in vf and "1080:1920" in vf
+        assert "crop='trunc(ih*9/16/2)*2':ih" in vf and "1080:1920" in vf
+
+    @pytest.mark.parametrize("kind", ["web_1080p", "vertical_916"])
+    def test_cuts_pin_yuv420p(self, kind):
+        """Regression: derived cuts inherited 4:4:4 from the master."""
+        cmd = derive_cut("master.mp4", "out.mp4", kind)
+        assert cmd[cmd.index("-vf") + 1].endswith("format=yuv420p")
+        assert cmd[cmd.index("-profile:v") + 1] == "high"
 
     def test_unknown_kind_raises(self):
         with pytest.raises(ValueError):
