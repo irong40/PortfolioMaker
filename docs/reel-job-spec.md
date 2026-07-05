@@ -96,4 +96,4 @@ python reel_renderer.py next
 python reel_renderer.py run          # claims next queued job
 ```
 
-`run` currently releases the job back to the queue with exit code 2 — the render core (scene detection, clip scoring, recipe assembly, Remotion overlays, NVENC encode) is Phase 3, gated on practice footage.
+The render core (`reel_render.py`: clip scoring, edit planning, xfade assembly, NVENC encode, derived cuts) is live — validated end-to-end 2026-07-05. Photos-only (Ken Burns) jobs are the one case `run` still releases back to the queue with exit code 2. All encodes pin `yuv420p` + standard profiles; unpinned NVENC output negotiates to unplayable 4:4:4 (see debug journal 2026-07-05).
