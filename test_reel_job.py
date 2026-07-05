@@ -13,6 +13,7 @@ from reel_job import (
     enqueue_reel_job,
     fail_job,
     load_reel_job,
+    log_music_usage,
     next_job,
     pick_music_track,
     release_job,
@@ -227,3 +228,25 @@ class TestPickMusicTrack:
         job = make_job()
         job["music"]["track"] = str(pool / "corporate" / "corporate_take0.wav")
         assert pick_music_track(job, pool).name == "corporate_take0.wav"
+
+
+class TestLogMusicUsage:
+    def test_creates_ledger_with_header_and_row(self, tmp_path):
+        job = make_job()
+        path = log_music_usage(job, tmp_path / "upbeat" / "upbeat-01-110.wav",
+                               tmp_path)
+        lines = path.read_text().strip().splitlines()
+        assert lines[0].startswith("rendered_utc,job_id,site,package,mood,track")
+        assert job["job_id"] in lines[1]
+        assert "upbeat-01-110.wav" in lines[1]
+
+    def test_appends_without_duplicate_header(self, tmp_path):
+        log_music_usage(make_job(), tmp_path / "a.wav", tmp_path)
+        path = log_music_usage(make_job(), tmp_path / "b.wav", tmp_path)
+        lines = path.read_text().strip().splitlines()
+        assert len(lines) == 3  # header + 2 rows
+        assert sum(1 for ln in lines if ln.startswith("rendered_utc")) == 1
+
+    def test_none_track_logs_native_audio(self, tmp_path):
+        path = log_music_usage(make_job(), None, tmp_path)
+        assert "native-audio" in path.read_text().strip().splitlines()[1]

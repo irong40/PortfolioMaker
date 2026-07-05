@@ -17,10 +17,11 @@ Queue state machine, by file extension (mirrors video-queue/ conventions):
 Full spec: docs/reel-job-spec.md
 """
 
+import csv
 import json
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA_ID = "sai.reel-job/1"
@@ -235,3 +236,29 @@ def pick_music_track(job: dict, pool_dir: Path) -> Path | None:
     if not tracks:
         return None
     return random.Random(job["job_id"]).choice(tracks)
+
+
+def log_music_usage(job: dict, music_track: Path | str | None,
+                    pool_dir: Path) -> Path:
+    """Append one row per completed render to music-pool/usage-log.csv.
+
+    reel-queue result files are working files and may be pruned; this ledger
+    survives, and is what a future same-client repeat-avoidance check reads.
+    """
+    log_path = Path(pool_dir) / "usage-log.csv"
+    is_new = not log_path.exists()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        if is_new:
+            writer.writerow(["rendered_utc", "job_id", "site", "package",
+                             "mood", "track"])
+        writer.writerow([
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            job["job_id"],
+            job.get("site", ""),
+            job.get("package", ""),
+            (job.get("music") or {}).get("mood", ""),
+            Path(music_track).name if music_track else "native-audio",
+        ])
+    return log_path

@@ -30,6 +30,7 @@ from reel_job import (
     enqueue_reel_job,
     fail_job,
     load_reel_job,
+    log_music_usage,
     next_job,
     pick_music_track,
     release_job,
@@ -164,6 +165,7 @@ def cmd_run(args) -> int:
 
     complete_job(claimed, outputs=outputs,
                  music_track=str(music) if music else None)
+    log_music_usage(job, music, MUSIC_POOL_DIR)
     print(f"DONE {job['job_id']}")
     for name, out in outputs.items():
         print(f"  {name}: {out}")
