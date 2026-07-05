@@ -2,10 +2,10 @@
 reel_renderer.py — Sentinel Aerial
 CLI for the video reel renderer. Standalone module Sortie calls post-mission.
 
-Phase 1: job creation, validation, and queue mechanics are live; the render
-core (scene detection, clip scoring, recipe assembly, NVENC encode) lands in
-Phase 3 against practice footage — render_reel() raises NotImplementedError
-until then, and `run` releases the job back to the queue when it hits that.
+Job creation, validation, queue mechanics, and the render core (reel_render.py:
+clip analysis, edit planning, xfade assembly, NVENC encode, derived cuts) are
+live. Photos-only Ken Burns reels are not implemented yet — `run` releases
+those jobs back to the queue.
 
 Usage:
     python reel_renderer.py create --package listing_pro --site "806 Meads Ct" \
@@ -42,16 +42,7 @@ VIDEO_EXTENSIONS = {".mp4", ".mov"}
 PHOTO_EXTENSIONS = {".jpg", ".jpeg"}
 
 
-# ─── Render core (Phase 3) ───────────────────────────────────────────────────
-
-def render_reel(job: dict, music_track: Path | None) -> dict:
-    """Render the reel per the locked recipe; returns outputs dict.
-
-    Phase 3 work: scene detection, clip scoring, trim + sequence, 0.5s
-    crossfades, LUT, Remotion overlays, NVENC encode, 9:16 social cut.
-    """
-    raise NotImplementedError(
-        "render core lands in Phase 3 (waiting on practice footage)")
+from reel_render import render_reel
 
 
 # ─── Folder scanning ─────────────────────────────────────────────────────────
