@@ -145,6 +145,20 @@ def share_folder(service, folder_id, role="reader"):
     return folder["webViewLink"]
 
 
+def collect_delivery_files(output_dir):
+    """Files to deliver from output_dir, walking subdirectories.
+
+    Folders starting with '_' are internal working/record dirs
+    (_report_thumbs, _mipmap_work, _gis, ...) and never ship to clients.
+    """
+    all_files = []
+    for root, dirs, files in os.walk(Path(output_dir)):
+        dirs[:] = [d for d in dirs if not d.startswith("_")]
+        for f in files:
+            all_files.append(Path(root) / f)
+    return all_files
+
+
 def deliver(output_dir, site_name, parent_folder_id=None,
             progress_callback=None):
     """
@@ -162,12 +176,8 @@ def deliver(output_dir, site_name, parent_folder_id=None,
     creds = _get_credentials()
     service = _build_service(creds)
 
-    # Collect all files to upload (walk subdirectories)
-    all_files = []
+    all_files = collect_delivery_files(output_dir)
     output_path = Path(output_dir)
-    for root, dirs, files in os.walk(output_path):
-        for f in files:
-            all_files.append(Path(root) / f)
 
     if not all_files:
         raise ValueError(f"No files found in {output_dir}")

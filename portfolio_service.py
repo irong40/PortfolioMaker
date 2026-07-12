@@ -286,13 +286,18 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     # 8. Write manifest
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # 8b. GIS-ready exports (photo points, flight tracks) → output_dir/gis
+    # 8b. GIS-ready exports (photo points, flight tracks). Delivered job
+    # types (preset gis_delivery) write to gis/; the rest write to _gis/,
+    # which drive_delivery skips — kept for SAI records only.
     gis_files = {}
+    gis_delivered = bool(preset.get("gis_delivery"))
     try:
         from gis_export import export_mission_gis
-        notify("gis", "Writing GIS exports (photo points, flight tracks)")
+        gis_dir = "gis" if gis_delivered else "_gis"
+        notify("gis", f"Writing GIS exports (photo points, flight tracks) "
+                      f"[{'client delivery' if gis_delivered else 'internal'}]")
         gis_files = export_mission_gis(working_set.photos, source_dir,
-                                       str(Path(output_dir) / "gis"),
+                                       str(Path(output_dir) / gis_dir),
                                        site_name=site_name)
         if gis_files:
             notify("gis", f"{len(gis_files)} GIS file(s) written")
@@ -394,10 +399,13 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         except ImportError:
             log.info("vegetation_analysis not available — skipping")
 
-        # Deliverables index for the report: ODM downloads + GIS + vegetation
+        # Deliverables index for the report: ODM downloads + vegetation +
+        # GIS only when the client actually receives it (internal _gis/
+        # files never appear in the client-facing report)
         deliverables_index = dict(downloaded)
-        deliverables_index.update(
-            {f"gis/{name}": path for name, path in gis_files.items()})
+        if gis_delivered:
+            deliverables_index.update(
+                {f"gis/{name}": path for name, path in gis_files.items()})
         if veg_results:
             deliverables_index.update(
                 {f"vegetation/{name}": path
@@ -503,13 +511,17 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
 
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # GIS-ready exports (photo points, flight tracks) → output_dir/gis
+    # GIS-ready exports — same delivery policy as process_job: preset
+    # gis_delivery → client gis/, otherwise internal _gis/ (delivery skips)
     gis_files = {}
+    gis_delivered = bool(preset.get("gis_delivery"))
     try:
         from gis_export import export_mission_gis
-        notify("gis", "Writing GIS exports (photo points, flight tracks)")
+        gis_dir = "gis" if gis_delivered else "_gis"
+        notify("gis", f"Writing GIS exports (photo points, flight tracks) "
+                      f"[{'client delivery' if gis_delivered else 'internal'}]")
         gis_files = export_mission_gis(working_set.photos, source_dir,
-                                       str(Path(output_dir) / "gis"),
+                                       str(Path(output_dir) / gis_dir),
                                        site_name=site_name)
         if gis_files:
             notify("gis", f"{len(gis_files)} GIS file(s) written")
@@ -550,8 +562,9 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
             "oblique_count": classification.oblique_count,
             "platform": classification.platform,
             "gps_bounds": classification.gps_bounds,
-            "downloads": {f"gis/{name}": path
-                          for name, path in gis_files.items()},
+            "downloads": ({f"gis/{name}": path
+                           for name, path in gis_files.items()}
+                          if gis_delivered else {}),
             "photos": photos,
             "ai_analysis": ai_analysis,
             "images": images,

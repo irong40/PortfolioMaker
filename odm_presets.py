@@ -70,6 +70,8 @@ PRESETS = {
         ] + _OUTPUT_OPTS + _SPLIT_MERGE,
         "downloads": ["orthophoto.tif", "dsm.tif"],
         "report_type": "construction_progress",
+        # GIS exports (photo points, tracks, KML) go in the client delivery
+        "gis_delivery": True,
     },
 
     # ── Property Survey ──────────────────────────────────────────────────
@@ -101,6 +103,7 @@ PRESETS = {
         ] + _OUTPUT_OPTS + _SPLIT_MERGE,
         "downloads": ["orthophoto.tif", "dsm.tif", "dtm.tif", "georeferenced_model.laz"],
         "report_type": "property_survey",
+        "gis_delivery": True,
     },
 
     # ── Roof Inspection ──────────────────────────────────────────────────
@@ -196,6 +199,7 @@ PRESETS = {
         "report_type": "vegetation",
         # Post-ODM headless QGIS VARI analysis (vegetation_analysis.py)
         "vegetation_analysis": True,
+        "gis_delivery": True,
     },
 
     # ── Real Estate / Marketing ──────────────────────────────────────────

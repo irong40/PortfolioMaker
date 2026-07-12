@@ -122,3 +122,21 @@ class TestJobTypes:
     def test_labels_match_presets(self):
         for key, label in JOB_TYPES:
             assert PRESETS[key]["label"] == label
+
+
+class TestGisPolicy:
+    """GIS delivery policy locked 2026-07-12: survey, construction, and
+    vegetation deliver GIS exports to the client; everything else keeps
+    them internal (_gis/, skipped by drive_delivery)."""
+
+    GIS_DELIVERED = {"property_survey", "construction_progress", "vegetation"}
+
+    def test_gis_delivery_job_types(self):
+        for key in PRESETS:
+            expected = key in self.GIS_DELIVERED
+            assert bool(PRESETS[key].get("gis_delivery")) is expected, key
+
+    def test_vegetation_analysis_only_on_vegetation(self):
+        for key in PRESETS:
+            expected = key == "vegetation"
+            assert bool(PRESETS[key].get("vegetation_analysis")) is expected, key
