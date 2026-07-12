@@ -117,6 +117,17 @@ class TestRun:
         ortho.write_bytes(b"t")
         assert va.run_vegetation_analysis(ortho, tmp_path / "veg") is None
 
+    def test_unwritable_out_dir_returns_none(self, fake_tools, tmp_path,
+                                             monkeypatch):
+        ortho = tmp_path / "orthophoto.tif"
+        ortho.write_bytes(b"t")
+
+        def raise_oserror(self, **kw):
+            raise PermissionError("read-only volume")
+
+        monkeypatch.setattr(va.Path, "mkdir", raise_oserror)
+        assert va.run_vegetation_analysis(ortho, tmp_path / "veg") is None
+
     def test_timeout_returns_none(self, fake_tools, tmp_path, monkeypatch):
         ortho = tmp_path / "orthophoto.tif"
         ortho.write_bytes(b"t")

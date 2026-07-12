@@ -83,7 +83,12 @@ def run_vegetation_analysis(ortho_path, out_dir, mission_id="ad-hoc",
         return None
 
     out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.error("Vegetation analysis cannot create output dir %s: %s",
+                  out, exc)
+        return None
     cmd = [str(qgis_python), str(veg_script),
            "--ortho", str(ortho_path),
            "--out", str(out),

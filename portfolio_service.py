@@ -303,6 +303,9 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             notify("gis", f"{len(gis_files)} GIS file(s) written")
     except ImportError:
         log.info("gis_export not available — skipping GIS exports")
+    except Exception as exc:
+        log.warning("GIS exports failed: %s", exc)
+        notify("warning", "GIS exports failed — continuing without them")
 
     # 9. AI analysis + image preparation + report generation
     report_result = None
@@ -398,6 +401,10 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
                     log.info("QGIS vegetation analysis not configured — skipping")
         except ImportError:
             log.info("vegetation_analysis not available — skipping")
+        except Exception as exc:
+            veg_results = None
+            log.warning("Vegetation analysis failed: %s", exc)
+            notify("warning", "Vegetation analysis failed — continuing without it")
 
         # Deliverables index for the report: ODM downloads + vegetation +
         # GIS only when the client actually receives it (internal _gis/
@@ -527,6 +534,9 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
             notify("gis", f"{len(gis_files)} GIS file(s) written")
     except ImportError:
         log.info("gis_export not available — skipping GIS exports")
+    except Exception as exc:
+        log.warning("GIS exports failed: %s", exc)
+        notify("warning", "GIS exports failed — continuing without them")
 
     # Generate report even in portfolio-only mode (with AI + images)
     report_result = None

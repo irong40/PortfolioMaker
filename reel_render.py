@@ -513,11 +513,16 @@ def render_reel(job: dict, music_track: Path | None,
 
     map_png = None
     if job["render"].get("map_card"):
-        map_png = make_map_card(job, str(work / "map.png"))
-        if map_png:
-            log("Map card: flight path rendered from SRT/KML")
+        # Optional decoration — never let a card error fail the reel
+        try:
+            map_png = make_map_card(job, str(work / "map.png"))
+        except Exception as exc:
+            log(f"Map card failed ({exc}) — skipping")
         else:
-            log("Map card requested but no SRT/KML data — skipping")
+            if map_png:
+                log("Map card: flight path rendered from SRT/KML")
+            else:
+                log("Map card requested but no SRT/KML data — skipping")
 
     target = float(job["render"]["duration_s"])
     plan = plan_reel(analyzed, target, map_card=bool(map_png))

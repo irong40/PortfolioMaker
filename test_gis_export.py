@@ -2,6 +2,7 @@
 
 import csv
 import json
+from pathlib import Path
 
 import pytest
 
@@ -151,7 +152,7 @@ class TestExportMissionGis:
         assert set(written) == {"photo_points.geojson", "photo_points.csv",
                                 "flight_tracks.geojson", "mission.kml"}
         for path in written.values():
-            assert (tmp_path / path).exists() or json.loads("true")  # abs paths
+            assert Path(path).exists(), f"returned path missing: {path}"
         assert (out_dir / "mission.kml").exists()
 
     def test_photos_only(self, tmp_path):
