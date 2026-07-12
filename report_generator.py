@@ -546,6 +546,44 @@ def _render_mesh_stats(elements, styles, data):
     elements.append(Spacer(1, 12))
 
 
+def _render_vegetation_analysis(elements, styles, section, data):
+    """Render the VARI vegetation index results table. Returns True if rendered."""
+    veg = data.get("veg_results")
+    if not veg:
+        return False
+
+    elements.append(Paragraph(section.title, styles["SectionHeader"]))
+    elements.append(Paragraph(
+        "Quantitative vegetation cover from the RGB orthomosaic using the "
+        "VARI index (Visible Atmospherically Resistant Index). Flagged "
+        "polygons are delivered as a GeoPackage plus a styled map PDF — "
+        "see Deliverables.",
+        styles["SentinelBody"]))
+    elements.append(Spacer(1, 6))
+
+    rows = [
+        ["Index", veg.get("index", "VARI")],
+        ["Vegetation Cover", f"{veg.get('veg_pct', 0):.1f}%"],
+        ["Flagged Polygons", str(veg.get("flagged_polygons", 0))],
+        ["Vegetation Threshold", f"{veg.get('threshold', 0):.2f}"],
+        ["Minimum Polygon Area", f"{veg.get('min_area_m2', 0):.1f} m²"],
+    ]
+
+    table = Table(rows, colWidths=[2.5 * inch, 4.0 * inch])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), SAI_LIGHT),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.5, LIGHT_GREY),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(table)
+    elements.append(Spacer(1, 12))
+    return True
+
+
 def _render_processing_details(elements, styles, data):
     """Render MipMap processing details for gaussian_splat reports."""
     mipmap = data.get("mipmap_settings", {})
@@ -646,6 +684,11 @@ def _render_section(elements, styles, section, data, ai_data, images, has_ai):
         return
     if key == "mesh_stats":
         _render_mesh_stats(elements, styles, data)
+        return
+    if key == "vegetation_analysis":
+        if _render_vegetation_analysis(elements, styles, section, data):
+            return
+        _render_fallback(elements, styles, section)
         return
     if key == "change_map":
         # Rendered inline by volume_comparison; skip standalone

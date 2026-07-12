@@ -110,6 +110,11 @@ class TestBuildReelJob:
         with_agent = make_job(agent={"name": "Jane Realtor", "phone": "757-555-0100"})
         assert with_agent["render"]["agent_card"] is True
 
+    def test_map_card_default_on(self):
+        """Map card requested on all packages; renderer skips without data."""
+        for package in PACKAGE_PRESETS:
+            assert make_job(package=package)["render"]["map_card"] is True
+
     def test_unknown_package_raises(self):
         with pytest.raises(ValueError, match="unknown package"):
             make_job(package="platinum_deluxe")

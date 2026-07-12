@@ -512,6 +512,15 @@ VEGETATION = ReportTemplate(
         ReportSection(key="flight_summary", title="Flight Summary"),
         ReportSection(key="ortho_preview", title="Vegetation Orthomosaic", include_images=True),
         ReportSection(
+            key="vegetation_analysis",
+            title="VARI Vegetation Index Analysis",
+            fallback_text=(
+                "Quantitative VARI (Visible Atmospherically Resistant Index) analysis "
+                "was not run for this mission. When enabled, flagged vegetation polygons "
+                "are delivered as a GeoPackage plus a styled map PDF alongside this report."
+            ),
+        ),
+        ReportSection(
             key="canopy_health",
             title="Canopy Health Assessment",
             ai_field="canopy_health",

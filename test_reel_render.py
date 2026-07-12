@@ -4,6 +4,7 @@ import pytest
 
 from reel_render import (
     INTRO_S,
+    MAP_S,
     MAX_SEG_S,
     MIN_SEG_S,
     OUTRO_S,
@@ -13,6 +14,7 @@ from reel_render import (
     choose_segmentation,
     derive_cut,
     make_card,
+    make_map_card,
     plan_duration,
     plan_reel,
     window_score,
@@ -138,6 +140,72 @@ class TestCards:
         out = make_card("outro", job, str(tmp_path / "outro.png"), size=(960, 540))
         from PIL import Image
         assert Image.open(out).size == (960, 540)
+
+
+def write_srt(path, points):
+    """Minimal DJI-style SRT with one telemetry block per point."""
+    blocks = []
+    for i, (lat, lon) in enumerate(points):
+        t = i / 30
+        m, s = divmod(t, 60)
+        start = f"00:{int(m):02d}:{int(s):02d},{int((s % 1) * 1000):03d}"
+        blocks.append(
+            f"{i + 1}\n{start} --> {start}\n"
+            f'<font size="28">[latitude: {lat:.6f}] [longitude: {lon:.6f}] '
+            f"[rel_alt: 30.500] [focal_len: 24.00]</font>\n")
+    path.write_text("\n".join(blocks), encoding="utf-8")
+    return str(path)
+
+
+class TestMapCard:
+    def make_job(self, tmp_path, with_srt=True, kml_path=None):
+        clips = []
+        if with_srt:
+            srt = write_srt(tmp_path / "DJI_0001.SRT",
+                            [(36.75 + i * 1e-4, -76.25 + i * 5e-5)
+                             for i in range(90)])
+            clips.append({"path": "DJI_0001.MP4", "name": "DJI_0001.MP4",
+                          "has_srt": True, "srt_path": srt})
+        return {"site": "806 Meads Ct", "address": "806 Meads Ct, Chesapeake",
+                "kml_path": kml_path, "inputs": {"clips": clips}}
+
+    def test_renders_from_srt(self, tmp_path):
+        from PIL import Image
+        job = self.make_job(tmp_path)
+        out = make_map_card(job, str(tmp_path / "map.png"), size=(960, 540))
+        assert out is not None
+        assert Image.open(out).size == (960, 540)
+
+    def test_none_without_data(self, tmp_path):
+        job = self.make_job(tmp_path, with_srt=False)
+        assert make_map_card(job, str(tmp_path / "map.png")) is None
+
+    def test_none_with_missing_srt_file(self, tmp_path):
+        job = self.make_job(tmp_path, with_srt=False)
+        job["inputs"]["clips"] = [{"path": "x.MP4", "name": "x.MP4",
+                                   "has_srt": True,
+                                   "srt_path": str(tmp_path / "gone.SRT")}]
+        assert make_map_card(job, str(tmp_path / "map.png")) is None
+
+
+class TestPlanWithMapCard:
+    def test_map_card_before_outro(self):
+        clips = [fake_clip(f"c{i}.mp4", 12.0) for i in range(11)]
+        plan = plan_reel(clips, 60, map_card=True)
+        cards = [p["card"] for p in plan if p["type"] == "card"]
+        assert cards == ["intro", "map", "outro"]
+        assert plan[-2]["card"] == "map" and plan[-2]["dur"] == MAP_S
+
+    def test_timeline_still_hits_target(self):
+        clips = [fake_clip(f"c{i}.mp4", 12.0) for i in range(11)]
+        plan = plan_reel(clips, 60, map_card=True)
+        assert plan_duration(plan) == pytest.approx(60, abs=0.01)
+
+    def test_default_plan_unchanged(self):
+        clips = [fake_clip(f"c{i}.mp4", 12.0) for i in range(11)]
+        plan = plan_reel(clips, 60)
+        cards = [p["card"] for p in plan if p["type"] == "card"]
+        assert cards == ["intro", "outro"]
 
 
 class TestAssemblyCmd:

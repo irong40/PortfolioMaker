@@ -194,6 +194,8 @@ PRESETS = {
         ] + _OUTPUT_OPTS + _SPLIT_MERGE,
         "downloads": ["orthophoto.tif", "dsm.tif"],
         "report_type": "vegetation",
+        # Post-ODM headless QGIS VARI analysis (vegetation_analysis.py)
+        "vegetation_analysis": True,
     },
 
     # ── Real Estate / Marketing ──────────────────────────────────────────

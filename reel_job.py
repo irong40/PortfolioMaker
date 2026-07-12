@@ -105,6 +105,9 @@ def build_reel_job(
             "lut": None,
             "overlay_address": True,           # locked: all packages
             "agent_card": bool(agent and agent.get("name")),
+            # Flight-path/location map card; renderer skips it gracefully
+            # when the job carries no SRT telemetry or KML boundary.
+            "map_card": True,
         },
     }
 

@@ -26,6 +26,7 @@ from PIL import Image, ImageDraw, ImageFont
 XFADE_S = 0.5          # locked recipe: 0.5s crossfades only
 INTRO_S = 3.0
 OUTRO_S = 4.0
+MAP_S = 3.0            # flight-path/location map card (before outro)
 MIN_SEG_S = 2.5
 MAX_SEG_S = 8.0
 TARGET_SEG_S = 5.5
@@ -144,36 +145,49 @@ def best_window(samples: list[dict], clip_duration: float, win_s: float) -> tupl
 
 def choose_segmentation(target_s: float, n_clips: int,
                         intro_s: float = INTRO_S, outro_s: float = OUTRO_S,
-                        xfade: float = XFADE_S) -> tuple[int, float]:
+                        xfade: float = XFADE_S,
+                        extra_cards_s: float = 0.0,
+                        extra_cards: int = 0) -> tuple[int, float]:
     """Pick (body segment count, segment length) to hit target duration.
 
-    Timeline = intro + outro + n*seg - xfade*(n+1); prefers segments near
-    TARGET_SEG_S within [MIN_SEG_S, MAX_SEG_S]. With few clips the reel
-    comes out shorter than target rather than dragging segments past max.
+    Timeline = intro + outro + extras + n*seg - xfade*(n+1+extra_cards);
+    prefers segments near TARGET_SEG_S within [MIN_SEG_S, MAX_SEG_S]. With
+    few clips the reel comes out shorter than target rather than dragging
+    segments past max. extra_cards/extra_cards_s account for optional cards
+    (e.g. the map card) beyond intro+outro.
     """
     if n_clips < 1:
         raise ValueError("no usable clips")
     best = None
     for n in range(1, n_clips + 1):
-        body_time = target_s - intro_s - outro_s + xfade * (n + 1)
+        transitions = n + 1 + extra_cards
+        body_time = (target_s - intro_s - outro_s - extra_cards_s
+                     + xfade * transitions)
         seg = min(max(body_time / n, MIN_SEG_S), MAX_SEG_S)
-        achieved = intro_s + outro_s + n * seg - xfade * (n + 1)
+        achieved = (intro_s + outro_s + extra_cards_s + n * seg
+                    - xfade * transitions)
         cost = (round(abs(achieved - target_s), 3), round(abs(seg - TARGET_SEG_S), 3))
         if best is None or cost < best[0]:
             best = (cost, n, seg)
     return best[1], best[2]
 
 
-def plan_reel(clips: list[dict], target_s: float) -> list[dict]:
+def plan_reel(clips: list[dict], target_s: float,
+              map_card: bool = False) -> list[dict]:
     """Build the edit plan from analyzed clips.
 
     clips: [{path, duration, samples}] — chronological (DJI filenames sort so).
     Returns plan items: {type: card|clip, dur, ...}; clip items carry path/start.
+    map_card inserts a flight-path map card before the outro (MAP_S seconds),
+    absorbed into the segmentation so the timeline still hits target_s.
     """
     usable = [c for c in clips if c["duration"] >= MIN_SEG_S]
     if not usable:
         raise ValueError(f"no clips >= {MIN_SEG_S}s to build a reel from")
-    n, seg = choose_segmentation(target_s, len(usable))
+    n, seg = choose_segmentation(
+        target_s, len(usable),
+        extra_cards_s=MAP_S if map_card else 0.0,
+        extra_cards=1 if map_card else 0)
 
     scored = []
     for c in usable:
@@ -186,6 +200,8 @@ def plan_reel(clips: list[dict], target_s: float) -> list[dict]:
     plan = [{"type": "card", "card": "intro", "dur": INTRO_S}]
     plan += [{"type": "clip", "path": p["path"], "start": p["start"], "dur": p["dur"]}
              for p in picked]
+    if map_card:
+        plan.append({"type": "card", "card": "map", "dur": MAP_S})
     plan.append({"type": "card", "card": "outro", "dur": OUTRO_S})
     return plan
 
@@ -253,6 +269,123 @@ def make_card(kind: str, job: dict, out_path: str,
         y += h // 20
         y += _center_text(draw, BRAND_LINE, _font(h // 24), y, w, CARD_ACCENT) + h // 30
         _center_text(draw, BRAND_URL, _font(h // 32, bold=False), y, w, CARD_DIM)
+    img.save(out_path)
+    return out_path
+
+
+# ─── Map card (GIS overlay) ──────────────────────────────────────────────────
+
+def _job_tracks(job: dict, min_dt_s: float = 0.5) -> list[list[tuple[float, float]]]:
+    """One (lat, lon) track per clip SRT sidecar — clips are separate
+    flights, so their tracks must never be joined into one line. Frames
+    are thinned to ~1/min_dt_s Hz: per-frame quantized GPS draws as boxy
+    zigzag at 30 Hz."""
+    from property_highlights import parse_srt
+    tracks = []
+    for clip in job.get("inputs", {}).get("clips", []):
+        srt = clip.get("srt_path")
+        if not (srt and Path(srt).exists()):
+            continue
+        try:
+            frames = parse_srt(srt)
+        except Exception:
+            continue
+        if len(frames) < 2:
+            continue
+        kept = [frames[0]]
+        for f in frames[1:-1]:
+            if f["time_s"] - kept[-1]["time_s"] >= min_dt_s:
+                kept.append(f)
+        kept.append(frames[-1])
+        tracks.append([(f["lat"], f["lon"]) for f in kept])
+    return tracks
+
+
+def _job_boundary(job: dict) -> list[tuple[float, float]]:
+    """Property boundary (lat, lon) polygon from the job's KML, if any."""
+    kml = job.get("kml_path")
+    if not (kml and Path(kml).exists()):
+        return []
+    try:
+        from sentinel_core.spatial import parse_kml
+        return list(parse_kml(kml))
+    except Exception:
+        return []
+
+
+def _latlon_to_px(points, bounds, rect):
+    """Map (lat, lon) points into a pixel rect, aspect-true (equirectangular)."""
+    import math
+    min_lat, max_lat, min_lon, max_lon = bounds
+    rx, ry, rw, rh = rect
+    mid_lat = math.radians((min_lat + max_lat) / 2)
+    span_x = max((max_lon - min_lon) * math.cos(mid_lat), 1e-9)
+    span_y = max(max_lat - min_lat, 1e-9)
+    scale = min(rw / span_x, rh / span_y)
+    used_w, used_h = span_x * scale, span_y * scale
+    ox, oy = rx + (rw - used_w) / 2, ry + (rh - used_h) / 2
+    return [(ox + (lon - min_lon) * math.cos(mid_lat) * scale,
+             oy + used_h - (lat - min_lat) * scale)
+            for lat, lon in points]
+
+
+def make_map_card(job: dict, out_path: str,
+                  size: tuple[int, int] = (MASTER_W, MASTER_H)) -> str | None:
+    """Render a flight-path/location map card PNG in the title-card style.
+
+    Draws the KML property boundary (when the job carries one) and the flight
+    track from the clips' SRT telemetry. Returns None when the job has neither
+    — callers then skip the card.
+    """
+    tracks = _job_tracks(job)
+    boundary = _job_boundary(job)
+    if not tracks and len(boundary) < 3:
+        return None
+
+    w, h = size
+    img = Image.new("RGB", size, CARD_BG)
+    draw = ImageDraw.Draw(img)
+
+    # Header / footer in the shared card style
+    y = int(h * 0.06)
+    y += _center_text(draw, job.get("site", ""), _font(h // 18), y, w, CARD_TEXT) + h // 60
+    _center_text(draw, "FLIGHT PATH", _font(h // 34), y, w, CARD_ACCENT)
+    if job.get("address"):
+        _center_text(draw, job["address"], _font(h // 36, bold=False),
+                     int(h * 0.92), w, CARD_DIM)
+
+    # Drawing area between header and footer, 10% padded bounds
+    everything = [p for t in tracks for p in t] + boundary
+    lats = [p[0] for p in everything]
+    lons = [p[1] for p in everything]
+    pad_lat = max((max(lats) - min(lats)) * 0.1, 1e-5)
+    pad_lon = max((max(lons) - min(lons)) * 0.1, 1e-5)
+    bounds = (min(lats) - pad_lat, max(lats) + pad_lat,
+              min(lons) - pad_lon, max(lons) + pad_lon)
+    rect = (w * 0.15, h * 0.20, w * 0.70, h * 0.66)
+
+    if len(boundary) >= 3:
+        overlay = Image.new("RGBA", size, (0, 0, 0, 0))
+        odraw = ImageDraw.Draw(overlay)
+        pts = _latlon_to_px(boundary, bounds, rect)
+        odraw.polygon(pts, fill=(*CARD_ACCENT, 40))
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        draw.line(pts + pts[:1], fill=CARD_DIM, width=max(2, h // 540))
+
+    if tracks:
+        r = max(6, h // 180)
+        for track in tracks:
+            pts = _latlon_to_px(track, bounds, rect)
+            draw.line(pts, fill=CARD_ACCENT, width=max(3, h // 360),
+                      joint="curve")
+        first = _latlon_to_px(tracks[0][:1], bounds, rect)[0]
+        last = _latlon_to_px(tracks[-1][-1:], bounds, rect)[0]
+        draw.ellipse([first[0] - r, first[1] - r, first[0] + r, first[1] + r],
+                     fill=CARD_TEXT)
+        draw.ellipse([last[0] - r, last[1] - r, last[0] + r, last[1] + r],
+                     outline=CARD_TEXT, width=max(2, r // 3))
+
     img.save(out_path)
     return out_path
 
@@ -389,14 +522,25 @@ def render_reel(job: dict, music_track: Path | None,
                          "samples": samples})
         log(f"  {clip['name']}: {info['duration']:.1f}s, {len(samples)} samples")
 
+    map_png = None
+    if job["render"].get("map_card"):
+        map_png = make_map_card(job, str(work / "map.png"))
+        if map_png:
+            log("Map card: flight path rendered from SRT/KML")
+        else:
+            log("Map card requested but no SRT/KML data — skipping")
+
     target = float(job["render"]["duration_s"])
-    plan = plan_reel(analyzed, target)
+    plan = plan_reel(analyzed, target, map_card=bool(map_png))
     n_clips = sum(1 for p in plan if p["type"] == "clip")
-    log(f"Edit plan: {n_clips} segments + intro/outro = "
+    n_cards = len(plan) - n_clips
+    log(f"Edit plan: {n_clips} segments + {n_cards} cards = "
         f"{plan_duration(plan):.1f}s timeline (target {target:.0f}s)")
 
     cards = {"intro": make_card("intro", job, str(work / "intro.png")),
              "outro": make_card("outro", job, str(work / "outro.png"))}
+    if map_png:
+        cards["map"] = map_png
 
     job_id = job["job_id"]
     outputs = {}

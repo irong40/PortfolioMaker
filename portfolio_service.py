@@ -286,6 +286,19 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     # 8. Write manifest
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
+    # 8b. GIS-ready exports (photo points, flight tracks) → output_dir/gis
+    gis_files = {}
+    try:
+        from gis_export import export_mission_gis
+        notify("gis", "Writing GIS exports (photo points, flight tracks)")
+        gis_files = export_mission_gis(working_set.photos, source_dir,
+                                       str(Path(output_dir) / "gis"),
+                                       site_name=site_name)
+        if gis_files:
+            notify("gis", f"{len(gis_files)} GIS file(s) written")
+    except ImportError:
+        log.info("gis_export not available — skipping GIS exports")
+
     # 9. AI analysis + image preparation + report generation
     report_result = None
     try:
@@ -357,6 +370,39 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         except ImportError:
             log.info("point_cloud_ops not available — skipping 3D analysis")
 
+        # VARI vegetation analysis (external QGIS, preset-gated, optional)
+        veg_results = None
+        try:
+            from vegetation_analysis import (
+                run_vegetation_analysis, veg_available, veg_deliverables,
+            )
+            if ortho_path and preset.get("vegetation_analysis"):
+                if veg_available():
+                    notify("report", "Running VARI vegetation analysis (QGIS)...")
+                    veg_results = run_vegetation_analysis(
+                        ortho_path, str(Path(output_dir) / "vegetation"),
+                        mission_id=f"{site_name} {date_str}", dsm_path=dsm_path)
+                    if veg_results:
+                        notify("report",
+                               f"Vegetation: {veg_results.get('veg_pct', 0):.1f}% cover, "
+                               f"{veg_results.get('flagged_polygons', 0)} polygon(s) flagged")
+                    else:
+                        notify("warning",
+                               "Vegetation analysis failed — continuing without it")
+                else:
+                    log.info("QGIS vegetation analysis not configured — skipping")
+        except ImportError:
+            log.info("vegetation_analysis not available — skipping")
+
+        # Deliverables index for the report: ODM downloads + GIS + vegetation
+        deliverables_index = dict(downloaded)
+        deliverables_index.update(
+            {f"gis/{name}": path for name, path in gis_files.items()})
+        if veg_results:
+            deliverables_index.update(
+                {f"vegetation/{name}": path
+                 for name, path in veg_deliverables(veg_results).items()})
+
         notify("report", f"Generating {preset['report_type']} report")
         report_data = {
             "site_name": site_name,
@@ -369,13 +415,14 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             "gps_bounds": classification.gps_bounds,
             "ortho_path": ortho_path,
             "dsm_path": dsm_path,
-            "downloads": downloaded,
+            "downloads": deliverables_index,
             "engine": engine,
             "mipmap_settings": preset.get("mipmap_settings", {}),
             "photos": photos,
             "ai_analysis": ai_analysis,
             "images": images,
             "pc_results": pc_results,
+            "veg_results": veg_results,
         }
         report_result = generate_report(preset["report_type"], report_data, output_dir)
         if report_result is None:
@@ -456,6 +503,19 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
 
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
+    # GIS-ready exports (photo points, flight tracks) → output_dir/gis
+    gis_files = {}
+    try:
+        from gis_export import export_mission_gis
+        notify("gis", "Writing GIS exports (photo points, flight tracks)")
+        gis_files = export_mission_gis(working_set.photos, source_dir,
+                                       str(Path(output_dir) / "gis"),
+                                       site_name=site_name)
+        if gis_files:
+            notify("gis", f"{len(gis_files)} GIS file(s) written")
+    except ImportError:
+        log.info("gis_export not available — skipping GIS exports")
+
     # Generate report even in portfolio-only mode (with AI + images)
     report_result = None
     try:
@@ -490,7 +550,8 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
             "oblique_count": classification.oblique_count,
             "platform": classification.platform,
             "gps_bounds": classification.gps_bounds,
-            "downloads": {},
+            "downloads": {f"gis/{name}": path
+                          for name, path in gis_files.items()},
             "photos": photos,
             "ai_analysis": ai_analysis,
             "images": images,

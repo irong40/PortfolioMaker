@@ -43,7 +43,7 @@ Crash recovery: a stale `.rendering` file can be re-queued with `release_job()`.
   "music":   {"mood": "upbeat", "track": null},
   "outputs": {"dir": null, "deliverables": ["master_4k", "web_1080p", "vertical_916"]},
   "render":  {"duration_s": 60, "lut": null,
-              "overlay_address": true, "agent_card": true}
+              "overlay_address": true, "agent_card": true, "map_card": true}
 }
 ```
 
@@ -54,6 +54,7 @@ Field notes:
 - **`outputs.dir`** `null` → renderer defaults to `E:/Portfolio/{site}/{YYYY-MM-DD}/reel/`.
 - **`render.agent_card`** is `true` only when agent info exists; renderer falls back to the SAI outro card otherwise.
 - **`render.lut`** `null` → renderer default LUT (matched to Lightroom presets, Phase 3).
+- **`render.map_card`** (default `true`, all packages): a 3.0s flight-path/location card before the outro, drawn from the clips' SRT telemetry (one polyline per clip — clips are separate flights) plus the `kml_path` boundary when present. The card's duration is absorbed into the segmentation, so the timeline still hits `duration_s`. When the job carries neither SRT nor KML the renderer skips the card silently — the flag is a request, not a guarantee.
 
 ## Package presets (LOCKED 2026-07-05)
 
