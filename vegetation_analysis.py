@@ -72,7 +72,7 @@ def run_vegetation_analysis(ortho_path, out_dir, mission_id="ad-hoc",
     defaults (0.15 VARI / 2.0 m²) when not given.
     """
     qgis_python, veg_script = resolve_paths()
-    if not veg_available():
+    if not (Path(qgis_python).exists() and Path(veg_script).exists()):
         log.info("QGIS vegetation analysis not configured "
                  "(qgis_python=%s, vegetation_script=%s)",
                  qgis_python, veg_script)

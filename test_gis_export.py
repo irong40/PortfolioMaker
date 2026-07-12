@@ -13,6 +13,7 @@ from gis_export import (
     export_photo_points_csv,
     export_photo_points_geojson,
     find_srt_files,
+    load_tracks,
 )
 from photo_classifier import PhotoMeta
 
@@ -80,10 +81,24 @@ class TestFlightTracks:
         assert kept[0] is frames[0] and kept[-1] is frames[-1]
         assert len(kept) < 15  # ~10s of 10 Hz → ~11 points
 
+    def test_load_tracks(self, tmp_path):
+        pts = [(36.75 + i * 1e-4, -76.25) for i in range(60)]
+        srt = write_srt(tmp_path / "DJI_0001.SRT", pts)
+        tracks = load_tracks([srt])
+        assert len(tracks) == 1
+        name, frames = tracks[0]
+        assert name == "DJI_0001" and len(frames) >= 2
+
+    def test_load_tracks_skips_unusable(self, tmp_path):
+        bad = tmp_path / "empty.SRT"
+        bad.write_text("not srt data")
+        assert load_tracks([str(bad)]) == []
+
     def test_tracks_geojson(self, tmp_path):
         pts = [(36.75 + i * 1e-4, -76.25) for i in range(60)]
         srt = write_srt(tmp_path / "DJI_0001.SRT", pts)
-        out = export_flight_tracks_geojson([srt], tmp_path / "tracks.geojson")
+        out = export_flight_tracks_geojson(load_tracks([srt]),
+                                           tmp_path / "tracks.geojson")
         data = json.loads((tmp_path / "tracks.geojson").read_text())
         assert out and len(data["features"]) == 1
         line = data["features"][0]
@@ -92,11 +107,8 @@ class TestFlightTracks:
         # GeoJSON axis order is [lon, lat, alt]
         assert line["geometry"]["coordinates"][0][0] == pytest.approx(-76.25)
 
-    def test_none_when_no_usable_srt(self, tmp_path):
-        bad = tmp_path / "empty.SRT"
-        bad.write_text("not srt data")
-        assert export_flight_tracks_geojson([str(bad)],
-                                            tmp_path / "t.geojson") is None
+    def test_none_when_no_tracks(self, tmp_path):
+        assert export_flight_tracks_geojson([], tmp_path / "t.geojson") is None
 
     def test_find_srt_files(self, tmp_path):
         (tmp_path / "sub").mkdir()
@@ -115,7 +127,8 @@ class TestKml:
         pts = [(36.75 + i * 1e-4, -76.25) for i in range(60)]
         srt = write_srt(tmp_path / "DJI_0001.SRT", pts)
         photos = [make_photo()]
-        out = export_mission_kml(photos, [srt], tmp_path / "m.kml", "Test Site")
+        out = export_mission_kml(photos, load_tracks([srt]),
+                                 tmp_path / "m.kml", "Test Site")
         text = (tmp_path / "m.kml").read_text()
         assert out and "<name>Test Site</name>" in text
         assert "Photo Positions" in text and "Flight Tracks" in text

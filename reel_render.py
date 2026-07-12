@@ -15,6 +15,7 @@ Phase 4; photos-only Ken Burns reels are not implemented yet.
 """
 
 import json
+import math
 import subprocess
 import tempfile
 from pathlib import Path
@@ -275,30 +276,17 @@ def make_card(kind: str, job: dict, out_path: str,
 
 # ─── Map card (GIS overlay) ──────────────────────────────────────────────────
 
-def _job_tracks(job: dict, min_dt_s: float = 0.5) -> list[list[tuple[float, float]]]:
+def _clip_flight_tracks(job: dict, min_dt_s: float = 0.5) -> list[list[tuple[float, float]]]:
     """One (lat, lon) track per clip SRT sidecar — clips are separate
     flights, so their tracks must never be joined into one line. Frames
     are thinned to ~1/min_dt_s Hz: per-frame quantized GPS draws as boxy
     zigzag at 30 Hz."""
-    from property_highlights import parse_srt
-    tracks = []
-    for clip in job.get("inputs", {}).get("clips", []):
-        srt = clip.get("srt_path")
-        if not (srt and Path(srt).exists()):
-            continue
-        try:
-            frames = parse_srt(srt)
-        except Exception:
-            continue
-        if len(frames) < 2:
-            continue
-        kept = [frames[0]]
-        for f in frames[1:-1]:
-            if f["time_s"] - kept[-1]["time_s"] >= min_dt_s:
-                kept.append(f)
-        kept.append(frames[-1])
-        tracks.append([(f["lat"], f["lon"]) for f in kept])
-    return tracks
+    from gis_export import load_tracks
+    srts = [clip.get("srt_path")
+            for clip in job.get("inputs", {}).get("clips", [])]
+    srts = [s for s in srts if s and Path(s).exists()]
+    return [[(f["lat"], f["lon"]) for f in frames]
+            for _name, frames in load_tracks(srts, min_dt_s)]
 
 
 def _job_boundary(job: dict) -> list[tuple[float, float]]:
@@ -315,7 +303,6 @@ def _job_boundary(job: dict) -> list[tuple[float, float]]:
 
 def _latlon_to_px(points, bounds, rect):
     """Map (lat, lon) points into a pixel rect, aspect-true (equirectangular)."""
-    import math
     min_lat, max_lat, min_lon, max_lon = bounds
     rx, ry, rw, rh = rect
     mid_lat = math.radians((min_lat + max_lat) / 2)
@@ -337,7 +324,7 @@ def make_map_card(job: dict, out_path: str,
     track from the clips' SRT telemetry. Returns None when the job has neither
     — callers then skip the card.
     """
-    tracks = _job_tracks(job)
+    tracks = _clip_flight_tracks(job)
     boundary = _job_boundary(job)
     if not tracks and len(boundary) < 3:
         return None
@@ -369,6 +356,8 @@ def make_map_card(job: dict, out_path: str,
         odraw = ImageDraw.Draw(overlay)
         pts = _latlon_to_px(boundary, bounds, rect)
         odraw.polygon(pts, fill=(*CARD_ACCENT, 40))
+        # compositing rebinds img/draw — anything drawn on the old handles
+        # before this point is baked in, anything after must use these
         img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
         draw = ImageDraw.Draw(img)
         draw.line(pts + pts[:1], fill=CARD_DIM, width=max(2, h // 540))

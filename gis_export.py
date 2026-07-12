@@ -27,7 +27,7 @@ TRACK_MIN_DT_S = 1.0
 
 # ─── Photo positions ─────────────────────────────────────────────────────────
 
-def _positioned(photos):
+def _photos_with_gps(photos):
     """Photos that carry a GPS fix."""
     return [p for p in photos
             if p.latitude is not None and p.longitude is not None]
@@ -38,7 +38,7 @@ def export_photo_points_geojson(photos, out_path):
 
     Returns out_path, or None when no photo has GPS.
     """
-    positioned = _positioned(photos)
+    positioned = _photos_with_gps(photos)
     if not positioned:
         return None
     features = []
@@ -75,7 +75,7 @@ def export_photo_points_csv(photos, out_path):
 
     Returns out_path, or None when no photo has GPS.
     """
-    positioned = _positioned(photos)
+    positioned = _photos_with_gps(photos)
     if not positioned:
         return None
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -115,20 +115,28 @@ def decimate_track(frames, min_dt_s=TRACK_MIN_DT_S):
     return kept
 
 
-def export_flight_tracks_geojson(srt_files, out_path, min_dt_s=TRACK_MIN_DT_S):
-    """Write one GeoJSON LineString per SRT sidecar with a usable track.
-
-    Returns out_path, or None when no SRT yields 2+ GPS points.
-    """
-    features = []
+def load_tracks(srt_files, min_dt_s=TRACK_MIN_DT_S):
+    """Parse + decimate each SRT into (name, frames). Skips unusable files;
+    a usable track has 2+ GPS-fixed frames."""
+    tracks = []
     for srt in srt_files:
         try:
             frames = decimate_track(parse_srt(str(srt)), min_dt_s)
         except Exception as exc:
             log.warning("Skipping unparseable SRT %s: %s", srt, exc)
             continue
-        if len(frames) < 2:
-            continue
+        if len(frames) >= 2:
+            tracks.append((Path(srt).stem, frames))
+    return tracks
+
+
+def export_flight_tracks_geojson(tracks, out_path):
+    """Write one GeoJSON LineString per loaded track (see load_tracks).
+
+    Returns out_path, or None when there are no tracks.
+    """
+    features = []
+    for name, frames in tracks:
         features.append({
             "type": "Feature",
             "geometry": {
@@ -137,7 +145,7 @@ def export_flight_tracks_geojson(srt_files, out_path, min_dt_s=TRACK_MIN_DT_S):
                                 for f in frames],
             },
             "properties": {
-                "clip": Path(srt).stem,
+                "clip": name,
                 "points": len(frames),
                 "duration_s": round(frames[-1]["time_s"] - frames[0]["time_s"], 1),
             },
@@ -158,22 +166,13 @@ def export_flight_tracks_geojson(srt_files, out_path, min_dt_s=TRACK_MIN_DT_S):
 
 # ─── KML (Google Earth) ──────────────────────────────────────────────────────
 
-def export_mission_kml(photos, srt_files, out_path, site_name="Mission",
-                       min_dt_s=TRACK_MIN_DT_S):
+def export_mission_kml(photos, tracks, out_path, site_name="Mission"):
     """Write one KML with photo-position placemarks + flight-track lines.
 
+    tracks: loaded (name, frames) pairs (see load_tracks).
     Returns out_path, or None when there is nothing to write.
     """
-    positioned = _positioned(photos)
-    tracks = []
-    for srt in srt_files:
-        try:
-            frames = decimate_track(parse_srt(str(srt)), min_dt_s)
-        except Exception as exc:
-            log.warning("Skipping unparseable SRT %s: %s", srt, exc)
-            continue
-        if len(frames) >= 2:
-            tracks.append((Path(srt).stem, frames))
+    positioned = _photos_with_gps(photos)
     if not positioned and not tracks:
         return None
 
@@ -221,7 +220,7 @@ def export_mission_gis(photos, source_dir, out_dir, site_name="Mission"):
     Returns {filename: path} of files actually written (may be empty).
     """
     out = Path(out_dir)
-    srt_files = find_srt_files(source_dir)
+    tracks = load_tracks(find_srt_files(source_dir))
     written = {}
     exports = [
         ("photo_points.geojson",
@@ -229,9 +228,9 @@ def export_mission_gis(photos, source_dir, out_dir, site_name="Mission"):
         ("photo_points.csv",
          lambda p: export_photo_points_csv(photos, p)),
         ("flight_tracks.geojson",
-         lambda p: export_flight_tracks_geojson(srt_files, p)),
+         lambda p: export_flight_tracks_geojson(tracks, p)),
         ("mission.kml",
-         lambda p: export_mission_kml(photos, srt_files, p, site_name)),
+         lambda p: export_mission_kml(photos, tracks, p, site_name)),
     ]
     for name, exporter in exports:
         try:
