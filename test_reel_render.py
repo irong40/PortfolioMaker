@@ -3,20 +3,24 @@
 import pytest
 
 from reel_render import (
+    DEFAULT_LUT,
     INTRO_S,
     MAP_S,
     MAX_SEG_S,
     MIN_SEG_S,
     OUTRO_S,
     XFADE_S,
+    _lut_filter,
     best_window,
     build_assembly_cmd,
     choose_segmentation,
+    clip_color_mode,
     derive_cut,
     make_card,
     make_map_card,
     plan_duration,
     plan_reel,
+    resolve_lut,
     window_score,
     xfade_offsets,
 )
@@ -274,3 +278,85 @@ class TestDeriveCut:
     def test_unknown_kind_raises(self):
         with pytest.raises(ValueError):
             derive_cut("m.mp4", "o.mp4", "imax")
+
+
+SRT_BLOCK = """1
+00:00:00,000 --> 00:00:00,033
+<font size="28">FrameCnt: 1, DiffTime: 33ms
+2026-06-19 16:14:44.416
+[iso: 110] [shutter: 1/4000.0] [fnum: 1.7] [ev: 0] [color_md: {mode}] [focal_len: 72.00] [latitude: 36.795162] [longitude: -76.405117] [rel_alt: 69.700 abs_alt: 119.745] [ct: 5700] </font>
+"""
+
+
+class TestColorMode:
+    def test_dlog_m_detected(self, tmp_path):
+        srt = tmp_path / "clip.SRT"
+        srt.write_text(SRT_BLOCK.format(mode="dlog_m"), encoding="utf-8")
+        assert clip_color_mode(str(srt)) == "dlog_m"
+
+    def test_normal_profile(self, tmp_path):
+        srt = tmp_path / "clip.SRT"
+        srt.write_text(SRT_BLOCK.format(mode="default"), encoding="utf-8")
+        assert clip_color_mode(str(srt)) == "default"
+
+    def test_missing_file_none(self, tmp_path):
+        assert clip_color_mode(str(tmp_path / "nope.SRT")) is None
+
+    def test_no_srt_path_none(self):
+        assert clip_color_mode(None) is None
+
+    def test_no_color_tag_none(self, tmp_path):
+        srt = tmp_path / "clip.SRT"
+        srt.write_text("1\n00:00:00,000 --> 00:00:00,033\nplain subtitle\n",
+                       encoding="utf-8")
+        assert clip_color_mode(str(srt)) is None
+
+
+class TestResolveLut:
+    def test_explicit_lut_wins(self, tmp_path):
+        cube = tmp_path / "custom.cube"
+        cube.write_text("LUT_3D_SIZE 2\n")
+        job = {"render": {"lut": str(cube)}}
+        assert resolve_lut(job) == str(cube)
+
+    def test_explicit_missing_falls_to_none(self, tmp_path):
+        """A named-but-absent LUT must not silently grade with the default."""
+        job = {"render": {"lut": str(tmp_path / "gone.cube")}}
+        assert resolve_lut(job) is None
+
+    def test_null_uses_repo_default(self):
+        job = {"render": {"lut": None}}
+        expected = str(DEFAULT_LUT) if DEFAULT_LUT.exists() else None
+        assert resolve_lut(job) == expected
+
+    def test_repo_default_shipped(self):
+        """The DJI D-Log M cube ships with the repo — D-Log footage is the norm."""
+        assert DEFAULT_LUT.exists()
+
+
+class TestLutFilter:
+    def test_windows_path_escaped(self):
+        atom = _lut_filter("D:\\Projects\\PortfolioMaker\\assets\\luts\\x.cube")
+        assert atom == "lut3d='D\\:/Projects/PortfolioMaker/assets/luts/x.cube'"
+
+    def test_assembly_grades_only_flagged_clips(self):
+        plan = TestAssemblyCmd.PLAN
+        cmd = build_assembly_cmd(plan, {"a.mp4": True, "b.mp4": True},
+                                 TestAssemblyCmd.CARDS, "out.mp4", music_track=None,
+                                 clip_luts={"a.mp4": "luts/dji.cube"})
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert graph.count("lut3d=") == 1
+        # graded clip: LUT applied before scaling; input 1 is clip a.mp4
+        assert "[1:v]lut3d='luts/dji.cube',scale=" in graph
+        # cards (inputs 0, 3) and the normal-profile clip (input 2) untouched
+        assert "[0:v]scale=" in graph and "[2:v]scale=" in graph and "[3:v]scale=" in graph
+
+    def test_assembly_no_luts_unchanged(self):
+        plan = TestAssemblyCmd.PLAN
+        with_none = build_assembly_cmd(plan, {"a.mp4": True, "b.mp4": True},
+                                       TestAssemblyCmd.CARDS, "out.mp4", music_track=None)
+        with_empty = build_assembly_cmd(plan, {"a.mp4": True, "b.mp4": True},
+                                        TestAssemblyCmd.CARDS, "out.mp4", music_track=None,
+                                        clip_luts={})
+        assert with_none == with_empty
+        assert "lut3d" not in " ".join(with_none)

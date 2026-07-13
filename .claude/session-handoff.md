@@ -1,41 +1,35 @@
 # Session Handoff
-**Date:** 2026-04-20
-**Branch:** dev
+**Date:** 2026-07-12
+**Branch:** dev (head `575413c`, pushed — dev == origin/dev)
 
 ## Accomplished
-- Added `property_highlights.py` module — GPS-registered animated property boundary overlay for drone footage (DJI SRT + KML → PIL animation → ffmpeg composite)
-- Added `PropertyHighlightsDialog` to `sortie.py` — Toplevel dialog in Tools menu with video picker, KML auto-match, heading override, scale-down, progress bar + cancel
-- Added video detection to Sortie scan flow — after photo scan, finds MP4s + SRTs in source folder, shows "Videos found" panel with listbox
-- Added "Send to Content Agent" button — writes timestamped JSON manifest to `video-queue/` for pickup by video-use workflow
-- Fixed MP4 dedup bug — Windows case-insensitive FS matched both `*.mp4` and `*.MP4`, causing doubled lists
-- Built and tested full video render pipeline for 806 Meads CT training footage:
-  - 5-beat 59s reel (wide vista → neighborhood → waterway → street → second neighborhood)
-  - DLog-M → warm cinematic grade (S-curve, highlight rolloff, saturation boost)
-  - H&G music bed (`2026-04-20_04_cinematic_tender_moment.wav`)
-  - PIL brand card end overlay (purple/gold Sentinel Aerial Inspections)
-- Marked 806 Meads manifest as `.SKIP` — footage was personal neighborhood test, not for publishing
+- **GIS integration feature** (`38b9073`), all four parts Adam scoped:
+  1. VARI vegetation analysis pipeline step — `vegetation_analysis.py` bridges to drone-pipeline's headless QGIS script; preset-gated (`vegetation_analysis` flag, vegetation only); paths: env `QGIS_PYTHON`/`VEG_SCRIPT` > `sortie_settings.json` > defaults
+  2. GIS/veg outputs in deliverables + "VARI Vegetation Index Analysis" report section
+  3. Reel map card (`render.map_card`, all packages) — 3.0s flight-path card before outro; one polyline per clip SRT (never joined), 0.5s decimation, KML boundary fill; segmentation absorbs the duration
+  4. `gis_export.py` — photo points (GeoJSON+CSV), per-clip tracks (GeoJSON), mission KML in both `process_job` and `portfolio_only`
+- **/qcheckf refactor** (`c51ce22`): shared `load_tracks()` dedup
+- **GIS delivery policy locked by Adam** (`d376d1f`): client package gets GIS exports ONLY for property_survey / construction_progress / vegetation (`gis_delivery` preset flag); all other job types → internal `_gis/`. drive_delivery skips `_`-prefixed folders at any depth — also fixed pre-existing leak of `_report_thumbs/` + `_mipmap_work/` into client Drive packages
+- **Codex cross-model audit + hardening fixes** (`575413c`): GIS/VARI pipeline blocks and reel map-card call now survive any runtime error (were ImportError-only — a permissions/disk error could abort a paid job after ODM finished); veg out-dir mkdir guarded; tautological test assertion fixed
+- 428 tests passing; commit history AI-trailer-free per repo GH-2 rule
 
 ## Next Steps
-- Shoot real client job footage → run through Sortie video pipeline for first publishable reel
-- `git push origin dev` when ready to sync to remote (14 commits ahead)
-- Consider adding `.SKIP` file handling to the queue reader so it ignores them automatically
-- Add road line overlay support to `property_highlights.py` (second KML with LineString)
-- Add `--before-after` wipe format to `property_highlights.py`
-- Add `--social` 1080x1920 vertical crop output
+- First live vegetation-mission run: verify the QGIS bridge on a real ortho end-to-end (bridge is subprocess-mock tested; the external script was live-tested 7/09 in drone-pipeline)
+- Practice flight validates the map card on real property-shoot tracks (fireworks corpus is hover-heavy → GPS jitter dominates at ~30 m extent)
+- GUI touchpoints offered, not yet requested: QGIS status indicator next to NodeODM check, Advanced settings fields for QGIS paths, GIS line in completion summary
+- Carried: Phase 4 Remotion templates, photos-only Ken Burns path, Phase 5 Sortie GUI reel queue + delivery wiring
 
 ## Known Issues
-- `sortie_settings.json` has unstaged local settings drift — expected, not a code issue
-- `video-queue/` folder is untracked — intentional (manifests are runtime artifacts, not code)
-- Brand card uses `sentinelaerialinspections.com` — verify this is the correct domain
+- **Tech debt (pre-existing, deferred from audit)**: drive_delivery flattens folders nested deeper than one level (upload targets `rel.parts[0]` only) — harmless while all deliverables are one level deep; fix before shipping nested tile sets
+- Map card on hover-heavy footage reads as GPS-noise scribble (acceptable; real shoots span the parcel)
+- VARI timeout is 3600s; very large orthos under QGIS python may need more
+- `sortie_settings.json` modified + `rtklib/` untracked — pre-existing local state, NOT from this session, left uncommitted deliberately
 
 ## Key Decisions
-- Video queue manifest format: JSON with `{created, site, source_dir, videos[], targets[], notes}`
-- Manifests marked `.SKIP` (not deleted) to preserve audit trail
-- Grade pipeline: per-segment extraction with grade → lossless concat → composite overlay → music mix (no double-encode)
-- DLog-M grade: `curves all S-curve + warm tint (r up, b down) + eq saturation=1.42`
-- Music source: H&G daily pipeline `cinematic` or `cafe-jazz` tracks from `daily_output/`
+- GIS delivery policy per job type via `gis_delivery` preset flag; internal-vs-delivered via `_`-prefix folder convention; client report lists only actually-delivered files
+- Vegetation analysis preset-gated and graceful-skip everywhere — a missing QGIS install or any runtime GIS/VARI error never breaks a mission (hardened post-audit)
+- Reel map card: request-not-guarantee; per-clip polylines; PIL card style (Remotion replaces in Phase 4)
+- Audit M2 (Drive folder flattening) deferred as pre-existing debt rather than fixed
 
 ## Uncommitted Changes
-- `sortie_settings.json` — local runtime settings, intentionally not committed
-- `.claude/` — session artifacts, not committed
-- `video-queue/` — manifest files, not committed
+- `sortie_settings.json` (pre-existing, not mine), untracked `rtklib/`, and `.claude/` state files — everything from this session is committed and pushed (`38b9073`, `c51ce22`, `d376d1f`, `575413c`)

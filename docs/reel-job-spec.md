@@ -53,7 +53,7 @@ Field notes:
 - **`music.mood`** derived from package; **`music.track`** set = explicit override, skips pool selection.
 - **`outputs.dir`** `null` → renderer defaults to `E:/Portfolio/{site}/{YYYY-MM-DD}/reel/`.
 - **`render.agent_card`** is `true` only when agent info exists; renderer falls back to the SAI outro card otherwise.
-- **`render.lut`** `null` → renderer default LUT (matched to Lightroom presets, Phase 3).
+- **`render.lut`** `null` → repo default LUT (`assets/luts/dji_dlog_m_to_rec709.cube`, DJI's official D-Log M → Rec.709). Set a path to override with a custom `.cube`. Applied **per clip**, only when that clip's SRT sidecar reports `[color_md: dlog_*]` — normal-profile clips and title cards are never graded, so mixed-profile reels stay correct. An explicit path that doesn't exist disables grading (with a flat-reel warning in the log) rather than silently falling back.
 - **`render.map_card`** (default `true`, all packages): a 3.0s flight-path/location card before the outro, drawn from the clips' SRT telemetry (one polyline per clip — clips are separate flights) plus the `kml_path` boundary when present. The card's duration is absorbed into the segmentation, so the timeline still hits `duration_s`. When the job carries neither SRT nor KML the renderer skips the card silently — the flag is a request, not a guarantee.
 
 ## Package presets (LOCKED 2026-07-05)

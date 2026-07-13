@@ -1,16 +1,15 @@
 {
-  "lastSession": "2026-04-20",
+  "lastSession": "2026-07-12",
   "branch": "dev",
-  "phase": "Video pipeline complete — needs real client footage to publish",
+  "phase": "GIS integration shipped + delivery policy locked + Codex audit fixes (dev 575413c, pushed, 428 tests); reel renderer Phases 1+3 live; next Phase 4 Remotion + Phase 5 GUI wiring",
   "workItems": [
-    "shoot real client footage and run through video pipeline",
-    "git push origin dev (14 commits ahead)",
-    "add .SKIP handling to queue reader",
-    "add --before-after wipe format to property_highlights.py",
-    "add road line overlay support (second KML LineString)",
-    "add --social 1080x1920 vertical output"
+    "First live vegetation-ortho end-to-end run through the QGIS bridge",
+    "Adam: practice flight (validates reel recipe + map card on real tracks; 1/60 + ND, 4K30)",
+    "GUI touchpoints if requested: QGIS status indicator, settings fields, GIS completion line",
+    "Phase 4: Remotion branded templates",
+    "Photos-only Ken Burns rendering path",
+    "Phase 5: Sortie GUI reel queue + delivery wiring",
+    "Tech debt: drive_delivery flattens folders nested >1 deep (fix before nested tile sets)"
   ],
-  "blockers": [
-    "No publishable client footage yet — 806 Meads was personal neighborhood test"
-  ]
+  "blockers": []
 }

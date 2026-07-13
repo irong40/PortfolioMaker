@@ -16,6 +16,7 @@ Phase 4; photos-only Ken Burns reels are not implemented yet.
 
 import json
 import math
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -37,6 +38,10 @@ FPS = 30
 
 SAMPLE_FPS = 3.0       # analysis sampling rate
 ANALYZE_MAX_DIM = 320  # downscale for motion/brightness sampling
+
+# DJI's official D-Log M -> Rec.709 conversion LUT (one curve across the
+# Mini 4 Pro / Matrice 4 series). render.lut in the job overrides this.
+DEFAULT_LUT = Path(__file__).resolve().parent / "assets" / "luts" / "dji_dlog_m_to_rec709.cube"
 
 # ─── Card style (PIL v1 — Remotion replaces these in Phase 4) ────────────────
 CARD_BG = (11, 15, 20)             # near-black slate
@@ -75,6 +80,39 @@ def find_proxy(path: str) -> str:
     """DJI LRF low-res proxy beside the clip, if present — much faster to decode."""
     lrf = Path(path).with_suffix(".LRF")
     return str(lrf) if lrf.exists() else str(path)
+
+
+def clip_color_mode(srt_path: str | None) -> str | None:
+    """Color profile from a DJI SRT sidecar ('dlog_m', 'default', ...), or None.
+
+    DJI stamps [color_md: X] on every frame block; the first occurrence is
+    enough. Fail-soft: unreadable/absent SRT or no tag -> None (treated as
+    normal profile — no LUT applied).
+    """
+    if not srt_path:
+        return None
+    try:
+        with open(srt_path, encoding="utf-8", errors="ignore") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return None
+    match = re.search(r"\[color_md\s*:\s*([\w-]+)\]", head)
+    return match.group(1).lower() if match else None
+
+
+def resolve_lut(job: dict) -> str | None:
+    """LUT to grade D-Log clips with: explicit render.lut > repo default > None."""
+    explicit = (job.get("render") or {}).get("lut")
+    if explicit:
+        return str(explicit) if Path(explicit).exists() else None
+    return str(DEFAULT_LUT) if DEFAULT_LUT.exists() else None
+
+
+def _lut_filter(lut_path: str) -> str:
+    """lut3d filter atom with the path escaped for a filtergraph string
+    (forward slashes; drive colon escaped; quoted against spaces)."""
+    escaped = lut_path.replace("\\", "/").replace(":", "\\:")
+    return f"lut3d='{escaped}'"
 
 
 def sample_clip(path: str, sample_fps: float = SAMPLE_FPS) -> list[dict]:
@@ -383,11 +421,15 @@ def make_map_card(job: dict, out_path: str,
 
 def build_assembly_cmd(plan: list[dict], clip_audio: dict, card_pngs: dict,
                        out_path: str, music_track: str | None,
-                       width: int = MASTER_W, height: int = MASTER_H) -> list[str]:
+                       width: int = MASTER_W, height: int = MASTER_H,
+                       clip_luts: dict | None = None) -> list[str]:
     """Build the single-pass ffmpeg command for the master reel.
 
     clip_audio: {path: has_audio} from probing. card_pngs: {"intro": png, "outro": png}.
+    clip_luts: {clip_path: cube_lut_path} — applied per clip before scaling,
+    so D-Log clips get graded while normal-profile clips and cards pass through.
     """
+    clip_luts = clip_luts or {}
     total = plan_duration(plan)
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"]
     silent_needed = []
@@ -415,8 +457,11 @@ def build_assembly_cmd(plan: list[dict], clip_audio: dict, card_pngs: dict,
 
     filters = []
     for i, item in enumerate(plan):
+        lut = clip_luts.get(item.get("path")) if item["type"] == "clip" else None
+        grade = _lut_filter(lut) + "," if lut else ""
         filters.append(
-            f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"[{i}:v]{grade}"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
             f"fps={FPS},setsar=1,format=yuv420p,settb=AVTB[v{i}]")
 
@@ -501,15 +546,28 @@ def render_reel(job: dict, music_track: Path | None,
     work = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="reel_"))
     work.mkdir(parents=True, exist_ok=True)
 
+    lut = resolve_lut(job)
     log(f"Analyzing {len(clips_in)} clips...")
-    analyzed, clip_audio = [], {}
+    analyzed, clip_audio, clip_luts = [], {}, {}
+    dlog_seen = False
     for clip in clips_in:
         info = probe_media(clip["path"])
         clip_audio[clip["path"]] = info["has_audio"]
         samples = sample_clip(find_proxy(clip["path"]))
         analyzed.append({"path": clip["path"], "duration": info["duration"],
                          "samples": samples})
-        log(f"  {clip['name']}: {info['duration']:.1f}s, {len(samples)} samples")
+        color_md = clip_color_mode(clip.get("srt_path"))
+        is_dlog = bool(color_md and color_md.startswith("dlog"))
+        dlog_seen = dlog_seen or is_dlog
+        if is_dlog and lut:
+            clip_luts[clip["path"]] = lut
+        log(f"  {clip['name']}: {info['duration']:.1f}s, {len(samples)} samples"
+            + (f", {color_md} -> LUT" if is_dlog and lut else ""))
+    if clip_luts:
+        log(f"Color: {len(clip_luts)}/{len(clips_in)} clips D-Log -> {Path(lut).name}")
+    elif dlog_seen:
+        log("WARNING: D-Log clips detected but no LUT available — reel will be flat. "
+            f"Expected LUT at {DEFAULT_LUT}")
 
     map_png = None
     if job["render"].get("map_card"):
@@ -541,7 +599,8 @@ def render_reel(job: dict, music_track: Path | None,
     master = out_dir / f"{job_id}_master_4k.mp4"
     log(f"Rendering 4K master (hevc_nvenc){' with music' if music_track else ' with native audio'}...")
     subprocess.run(build_assembly_cmd(plan, clip_audio, cards, str(master),
-                                      str(music_track) if music_track else None),
+                                      str(music_track) if music_track else None,
+                                      clip_luts=clip_luts),
                    check=True)
     outputs["master_4k"] = str(master)
 
