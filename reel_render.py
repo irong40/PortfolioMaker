@@ -10,8 +10,10 @@ ffmpeg pass to 4K master (hevc_nvenc) → derived 1080p web + 9:16 vertical
 cuts (h264_nvenc).
 
 Audio priority: explicit job music track > music pool pick > native clip
-audio > silence. Branded Remotion templates replace the PIL title cards in
-Phase 4; photos-only Ken Burns reels are not implemented yet.
+audio > silence. Photos-only jobs render as Ken Burns reels (stills + panos,
+alternating zoom/pan moves). Body segments carry a centered address
+lower-third (survives the 9:16 center crop). Branded Remotion templates
+replace the PIL title cards in Phase 4.
 """
 
 import json
@@ -42,6 +44,13 @@ ANALYZE_MAX_DIM = 320  # downscale for motion/brightness sampling
 # DJI's official D-Log M -> Rec.709 conversion LUT (one curve across the
 # Mini 4 Pro / Matrice 4 series). render.lut in the job overrides this.
 DEFAULT_LUT = Path(__file__).resolve().parent / "assets" / "luts" / "dji_dlog_m_to_rec709.cube"
+
+# Address overlay (locked decision: all packages). Centered lower-third so it
+# survives the 9:16 center crop of the vertical cut.
+OVERLAY_FONT = Path("C:/Windows/Fonts/arialbd.ttf")
+
+KB_ZOOM = 0.12         # Ken Burns total zoom travel for photos-only reels
+KB_PRESCALE = 1.5      # upscale factor ahead of zoompan (fights subpixel jitter)
 
 # ─── Card style (PIL v1 — Remotion replaces these in Phase 4) ────────────────
 CARD_BG = (11, 15, 20)             # near-black slate
@@ -113,6 +122,58 @@ def _lut_filter(lut_path: str) -> str:
     (forward slashes; drive colon escaped; quoted against spaces)."""
     escaped = lut_path.replace("\\", "/").replace(":", "\\:")
     return f"lut3d='{escaped}'"
+
+
+def _address_overlay_filter(text: str, width: int, height: int, work_dir: Path,
+                            font: Path = OVERLAY_FONT) -> str | None:
+    """drawtext atom for the persistent address lower-third on body segments.
+
+    Centered horizontally so the 9:16 vertical cut's center crop keeps it.
+    The text goes through drawtext's textfile= option — inline text= is
+    double-parsed (filtergraph level + drawtext level) and an address with
+    an apostrophe breaks quoting and swallows the remaining options.
+    Returns None when the font file is missing (caller logs and skips —
+    a reel without the overlay beats a failed render).
+    """
+    if not font.exists():
+        return None
+    textfile = Path(work_dir) / "address_overlay.txt"
+    textfile.write_text(text, encoding="utf-8")  # no trailing newline
+    # Cap the size so the full address fits inside the 9:16 center crop of
+    # the vertical cut (~0.58em average glyph width for Arial bold).
+    crop_fit = int(height * 9 / 16 * 0.92 / (0.58 * max(1, len(text))))
+    fontsize = max(18, min(height // 42, crop_fit))
+    boxpad = max(6, fontsize * 2 // 5)
+    fontfile = str(font).replace("\\", "/").replace(":", "\\:")
+    tf = str(textfile).replace("\\", "/").replace(":", "\\:")
+    return (f"drawtext=fontfile='{fontfile}':textfile='{tf}'"
+            f":fontsize={fontsize}:fontcolor=white"
+            f":box=1:boxcolor=0x0B0F14@0.45:boxborderw={boxpad}"
+            f":x=(w-text_w)/2:y=h-text_h-{int(height * 0.045)}")
+
+
+def _kenburns_filter(idx: int, dur_s: float, width: int, height: int) -> str:
+    """Ken Burns chain for one still: AR crop -> prescale -> zoompan.
+
+    Motion alternates by position (zoom in / zoom out / pan across / pan
+    down) so photos-only reels don't strobe the same move. Deterministic —
+    no randomness, same job renders the same reel.
+    """
+    d = max(2, round(dur_s * FPS))
+    dd = d - 1
+    z_hi = f"{1 + KB_ZOOM:.2f}"
+    center_x = "(iw-iw/zoom)/2"
+    center_y = "(ih-ih/zoom)/2"
+    variants = [
+        (f"1+{KB_ZOOM}*on/{dd}", center_x, center_y),           # zoom in
+        (f"{z_hi}-{KB_ZOOM}*on/{dd}", center_x, center_y),      # zoom out
+        (z_hi, f"(iw-iw/zoom)*on/{dd}", center_y),              # pan across
+        (z_hi, center_x, f"(ih-ih/zoom)*on/{dd}"),              # pan down
+    ]
+    z, x, y = variants[idx % len(variants)]
+    return (f"crop='min(iw,ih*{width}/{height})':'min(ih,iw*{height}/{width})',"
+            f"scale={int(width * KB_PRESCALE)}:-2,"
+            f"zoompan=z='{z}':x='{x}':y='{y}':d={d}:s={width}x{height}:fps={FPS}")
 
 
 def sample_clip(path: str, sample_fps: float = SAMPLE_FPS) -> list[dict]:
@@ -245,6 +306,35 @@ def plan_reel(clips: list[dict], target_s: float,
     return plan
 
 
+def plan_photo_reel(stills: list[str], target_s: float,
+                    map_card: bool = False) -> list[dict]:
+    """Edit plan for a photos-only (Ken Burns) reel — the Listing Lite fallback.
+
+    stills: photo + pano paths (DJI filenames sort chronologically). When
+    there are more stills than segments, picks an even spread across the
+    shoot rather than the first N, keeping capture order.
+    """
+    if not stills:
+        raise ValueError("no photos to build a reel from")
+    stills = sorted(stills)
+    n, seg = choose_segmentation(
+        target_s, len(stills),
+        extra_cards_s=MAP_S if map_card else 0.0,
+        extra_cards=1 if map_card else 0)
+    if n < len(stills) and n > 1:
+        idxs = sorted({round(i * (len(stills) - 1) / (n - 1)) for i in range(n)})
+        picked = [stills[j] for j in idxs]
+    else:
+        picked = stills[:n]
+
+    plan = [{"type": "card", "card": "intro", "dur": INTRO_S}]
+    plan += [{"type": "photo", "path": p, "dur": seg} for p in picked]
+    if map_card:
+        plan.append({"type": "card", "card": "map", "dur": MAP_S})
+    plan.append({"type": "card", "card": "outro", "dur": OUTRO_S})
+    return plan
+
+
 def plan_duration(plan: list[dict], xfade: float = XFADE_S) -> float:
     """Final timeline duration of a plan after crossfade overlap."""
     return sum(p["dur"] for p in plan) - xfade * (len(plan) - 1)
@@ -293,6 +383,8 @@ def make_card(kind: str, job: dict, out_path: str,
             _center_text(draw, job["address"], _font(h // 32, bold=False), y, w, CARD_DIM)
     else:
         agent = job.get("agent") or {}
+        if not (job.get("render") or {}).get("agent_card", True):
+            agent = {}  # flag off -> SAI-only outro even when agent data exists
         y = int(h * 0.34)
         if agent.get("name"):
             y += _center_text(draw, agent["name"], _font(h // 14), y, w, CARD_TEXT) + h // 30
@@ -422,12 +514,15 @@ def make_map_card(job: dict, out_path: str,
 def build_assembly_cmd(plan: list[dict], clip_audio: dict, card_pngs: dict,
                        out_path: str, music_track: str | None,
                        width: int = MASTER_W, height: int = MASTER_H,
-                       clip_luts: dict | None = None) -> list[str]:
+                       clip_luts: dict | None = None,
+                       body_overlay: str | None = None) -> list[str]:
     """Build the single-pass ffmpeg command for the master reel.
 
     clip_audio: {path: has_audio} from probing. card_pngs: {"intro": png, "outro": png}.
     clip_luts: {clip_path: cube_lut_path} — applied per clip before scaling,
     so D-Log clips get graded while normal-profile clips and cards pass through.
+    body_overlay: prebuilt drawtext atom (address lower-third) applied to body
+    segments (clips + photos) only — cards carry their own address rendering.
     """
     clip_luts = clip_luts or {}
     total = plan_duration(plan)
@@ -438,6 +533,8 @@ def build_assembly_cmd(plan: list[dict], clip_audio: dict, card_pngs: dict,
         if item["type"] == "card":
             cmd += ["-loop", "1", "-t", f"{item['dur']:.3f}",
                     "-i", card_pngs[item["card"]]]
+        elif item["type"] == "photo":
+            cmd += ["-i", item["path"]]  # zoompan d= sets the output length
         else:
             cmd += ["-ss", f"{item['start']:.3f}", "-t", f"{item['dur']:.3f}",
                     "-i", item["path"]]
@@ -457,13 +554,20 @@ def build_assembly_cmd(plan: list[dict], clip_audio: dict, card_pngs: dict,
 
     filters = []
     for i, item in enumerate(plan):
+        overlay = (body_overlay + ","
+                   if body_overlay and item["type"] in ("clip", "photo") else "")
+        if item["type"] == "photo":
+            filters.append(
+                f"[{i}:v]{_kenburns_filter(i, item['dur'], width, height)},"
+                f"{overlay}fps={FPS},setsar=1,format=yuv420p,settb=AVTB[v{i}]")
+            continue
         lut = clip_luts.get(item.get("path")) if item["type"] == "clip" else None
         grade = _lut_filter(lut) + "," if lut else ""
         filters.append(
             f"[{i}:v]{grade}"
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
-            f"fps={FPS},setsar=1,format=yuv420p,settb=AVTB[v{i}]")
+            f"{overlay}fps={FPS},setsar=1,format=yuv420p,settb=AVTB[v{i}]")
 
     durations = [p["dur"] for p in plan]
     offsets = xfade_offsets(durations)
@@ -537,37 +641,39 @@ def render_reel(job: dict, music_track: Path | None,
                 work_dir: str | None = None, log=print) -> dict:
     """Render the full deliverable set for a job. Returns outputs dict."""
     clips_in = job["inputs"]["clips"]
-    if not clips_in:
-        raise NotImplementedError(
-            "photos-only (Ken Burns) rendering not implemented yet — job has no clips")
+    stills_in = list(job["inputs"].get("photos") or []) + \
+        list(job["inputs"].get("panos") or [])
+    if not clips_in and not stills_in:
+        raise ValueError("job has no inputs — need clips or photos/panos")
 
     out_dir = Path(job["outputs"]["dir"] or default_output_dir(job))
     out_dir.mkdir(parents=True, exist_ok=True)
     work = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="reel_"))
     work.mkdir(parents=True, exist_ok=True)
 
-    lut = resolve_lut(job)
-    log(f"Analyzing {len(clips_in)} clips...")
     analyzed, clip_audio, clip_luts = [], {}, {}
-    dlog_seen = False
-    for clip in clips_in:
-        info = probe_media(clip["path"])
-        clip_audio[clip["path"]] = info["has_audio"]
-        samples = sample_clip(find_proxy(clip["path"]))
-        analyzed.append({"path": clip["path"], "duration": info["duration"],
-                         "samples": samples})
-        color_md = clip_color_mode(clip.get("srt_path"))
-        is_dlog = bool(color_md and color_md.startswith("dlog"))
-        dlog_seen = dlog_seen or is_dlog
-        if is_dlog and lut:
-            clip_luts[clip["path"]] = lut
-        log(f"  {clip['name']}: {info['duration']:.1f}s, {len(samples)} samples"
-            + (f", {color_md} -> LUT" if is_dlog and lut else ""))
-    if clip_luts:
-        log(f"Color: {len(clip_luts)}/{len(clips_in)} clips D-Log -> {Path(lut).name}")
-    elif dlog_seen:
-        log("WARNING: D-Log clips detected but no LUT available — reel will be flat. "
-            f"Expected LUT at {DEFAULT_LUT}")
+    if clips_in:
+        lut = resolve_lut(job)
+        log(f"Analyzing {len(clips_in)} clips...")
+        dlog_seen = False
+        for clip in clips_in:
+            info = probe_media(clip["path"])
+            clip_audio[clip["path"]] = info["has_audio"]
+            samples = sample_clip(find_proxy(clip["path"]))
+            analyzed.append({"path": clip["path"], "duration": info["duration"],
+                             "samples": samples})
+            color_md = clip_color_mode(clip.get("srt_path"))
+            is_dlog = bool(color_md and color_md.startswith("dlog"))
+            dlog_seen = dlog_seen or is_dlog
+            if is_dlog and lut:
+                clip_luts[clip["path"]] = lut
+            log(f"  {clip['name']}: {info['duration']:.1f}s, {len(samples)} samples"
+                + (f", {color_md} -> LUT" if is_dlog and lut else ""))
+        if clip_luts:
+            log(f"Color: {len(clip_luts)}/{len(clips_in)} clips D-Log -> {Path(lut).name}")
+        elif dlog_seen:
+            log("WARNING: D-Log clips detected but no LUT available — reel will be flat. "
+                f"Expected LUT at {DEFAULT_LUT}")
 
     map_png = None
     if job["render"].get("map_card"):
@@ -583,11 +689,23 @@ def render_reel(job: dict, music_track: Path | None,
                 log("Map card requested but no SRT/KML data — skipping")
 
     target = float(job["render"]["duration_s"])
-    plan = plan_reel(analyzed, target, map_card=bool(map_png))
-    n_clips = sum(1 for p in plan if p["type"] == "clip")
-    n_cards = len(plan) - n_clips
-    log(f"Edit plan: {n_clips} segments + {n_cards} cards = "
+    if clips_in:
+        plan = plan_reel(analyzed, target, map_card=bool(map_png))
+    else:
+        log(f"Photos-only job — Ken Burns reel from {len(stills_in)} stills")
+        plan = plan_photo_reel(stills_in, target, map_card=bool(map_png))
+    n_body = sum(1 for p in plan if p["type"] in ("clip", "photo"))
+    n_cards = len(plan) - n_body
+    log(f"Edit plan: {n_body} segments + {n_cards} cards = "
         f"{plan_duration(plan):.1f}s timeline (target {target:.0f}s)")
+
+    body_overlay = None
+    if job["render"].get("overlay_address") and job.get("address"):
+        body_overlay = _address_overlay_filter(job["address"], MASTER_W, MASTER_H,
+                                               work)
+        if body_overlay is None:
+            log(f"WARNING: overlay font missing ({OVERLAY_FONT}) — "
+                "address overlay skipped")
 
     cards = {"intro": make_card("intro", job, str(work / "intro.png")),
              "outro": make_card("outro", job, str(work / "outro.png"))}
@@ -600,7 +718,8 @@ def render_reel(job: dict, music_track: Path | None,
     log(f"Rendering 4K master (hevc_nvenc){' with music' if music_track else ' with native audio'}...")
     subprocess.run(build_assembly_cmd(plan, clip_audio, cards, str(master),
                                       str(music_track) if music_track else None,
-                                      clip_luts=clip_luts),
+                                      clip_luts=clip_luts,
+                                      body_overlay=body_overlay),
                    check=True)
     outputs["master_4k"] = str(master)
 

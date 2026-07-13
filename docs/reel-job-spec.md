@@ -49,10 +49,13 @@ Crash recovery: a stale `.rendering` file can be re-queued with `release_job()`.
 
 Field notes:
 
-- **`inputs.clips`** reuses Sortie's video-scan shape (`_scan_videos` in `sortie.py`); `panos`/`photos` are plain path strings. At least one input list must be non-empty — photos-only is valid (Ken Burns reel, Listing Lite fallback).
+- **`inputs.clips`** reuses Sortie's video-scan shape (`_scan_videos` in `sortie.py`); `panos`/`photos` are plain path strings. At least one input list must be non-empty. Photos-only jobs render as **Ken Burns reels** (Listing Lite fallback): photos + panos pooled, chronological, even-spread selection when there are more stills than segments, alternating zoom-in/zoom-out/pan moves (deterministic by position). When clips exist the reel is clips-only; stills are ignored.
+- **`front_bearing`** is informational metadata (recorded for future front-elevation/orientation use); the renderer does not read it.
+- **`render.overlay_address`** (default `true`, all packages — locked decision 2): centered address lower-third on body segments (clips + photos), boxed for legibility, positioned to survive the 9:16 center crop. Cards keep their own address rendering. Skipped with a log warning when the job has no address or the overlay font is missing.
+- **`render.agent_card`** `false` forces the SAI-only outro even when agent data is present on the job.
 - **`music.mood`** derived from package; **`music.track`** set = explicit override, skips pool selection.
 - **`outputs.dir`** `null` → renderer defaults to `E:/Portfolio/{site}/{YYYY-MM-DD}/reel/`.
-- **`render.agent_card`** is `true` only when agent info exists; renderer falls back to the SAI outro card otherwise.
+- **`render.agent_card`** defaults to `true` only when agent info exists; the renderer falls back to the SAI outro card when it's `false` or agent data is absent.
 - **`render.lut`** `null` → repo default LUT (`assets/luts/dji_dlog_m_to_rec709.cube`, DJI's official D-Log M → Rec.709). Set a path to override with a custom `.cube`. Applied **per clip**, only when that clip's SRT sidecar reports `[color_md: dlog_*]` — normal-profile clips and title cards are never graded, so mixed-profile reels stay correct. An explicit path that doesn't exist disables grading (with a flat-reel warning in the log) rather than silently falling back.
 - **`render.map_card`** (default `true`, all packages): a 3.0s flight-path/location card before the outro, drawn from the clips' SRT telemetry (one polyline per clip — clips are separate flights) plus the `kml_path` boundary when present. The card's duration is absorbed into the segmentation, so the timeline still hits `duration_s`. When the job carries neither SRT nor KML the renderer skips the card silently — the flag is a request, not a guarantee.
 

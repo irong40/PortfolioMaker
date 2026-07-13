@@ -9,7 +9,10 @@ from reel_render import (
     MAX_SEG_S,
     MIN_SEG_S,
     OUTRO_S,
+    OVERLAY_FONT,
     XFADE_S,
+    _address_overlay_filter,
+    _kenburns_filter,
     _lut_filter,
     best_window,
     build_assembly_cmd,
@@ -19,6 +22,7 @@ from reel_render import (
     make_card,
     make_map_card,
     plan_duration,
+    plan_photo_reel,
     plan_reel,
     resolve_lut,
     window_score,
@@ -360,3 +364,148 @@ class TestLutFilter:
                                         clip_luts={})
         assert with_none == with_empty
         assert "lut3d" not in " ".join(with_none)
+
+
+class TestAddressOverlay:
+    @pytest.mark.skipif(not OVERLAY_FONT.exists(), reason="overlay font not installed")
+    def test_atom_centered_boxed(self, tmp_path):
+        atom = _address_overlay_filter("806 Meads Ct, Chesapeake, VA 23322",
+                                       3840, 2160, tmp_path)
+        assert atom.startswith("drawtext=fontfile=")
+        assert "x=(w-text_w)/2" in atom          # centered -> survives 9:16 crop
+        assert "box=1" in atom
+        assert "textfile=" in atom and "text='" not in atom
+
+    @pytest.mark.skipif(not OVERLAY_FONT.exists(), reason="overlay font not installed")
+    def test_text_goes_through_file_verbatim(self, tmp_path):
+        """Apostrophes broke inline text= (double parsing) — textfile carries
+        the address untouched, no escaping of content at all."""
+        _address_overlay_filter("12 O'Neill Rd", 3840, 2160, tmp_path)
+        assert (tmp_path / "address_overlay.txt").read_text(
+            encoding="utf-8") == "12 O'Neill Rd"
+
+    def test_missing_font_none(self, tmp_path):
+        assert _address_overlay_filter("x", 3840, 2160, tmp_path,
+                                       font=tmp_path / "nope.ttf") is None
+
+    @pytest.mark.skipif(not OVERLAY_FONT.exists(), reason="overlay font not installed")
+    def test_long_address_shrinks_to_fit_vertical_crop(self, tmp_path):
+        import re
+        short = _address_overlay_filter("806 Meads Ct", 3840, 2160, tmp_path)
+        long = _address_overlay_filter(
+            "1234 Chesapeake Boulevard Extended, Virginia Beach, VA 23456-1234",
+            3840, 2160, tmp_path)
+        size = lambda atom: int(re.search(r"fontsize=(\d+)", atom).group(1))
+        assert size(long) < size(short)
+        # long address at its fontsize must fit the 9:16 crop width
+        assert size(long) * 0.58 * 66 <= 2160 * 9 / 16
+
+    def test_assembly_overlays_body_not_cards(self):
+        cmd = build_assembly_cmd(TestAssemblyCmd.PLAN, {"a.mp4": True, "b.mp4": True},
+                                 TestAssemblyCmd.CARDS, "out.mp4", music_track=None,
+                                 body_overlay="drawtext=text='addr'")
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert graph.count("drawtext") == 2       # the two clips
+        assert "[0:v]scale" in graph              # intro card untouched
+        assert "[3:v]scale" in graph and "[3:v]drawtext" not in graph
+
+    def test_assembly_default_no_overlay(self):
+        cmd = build_assembly_cmd(TestAssemblyCmd.PLAN, {"a.mp4": True, "b.mp4": True},
+                                 TestAssemblyCmd.CARDS, "out.mp4", music_track=None)
+        assert "drawtext" not in cmd[cmd.index("-filter_complex") + 1]
+
+    def test_overlay_composes_with_lut(self):
+        """Graded D-Log clip gets LUT first, then the overlay, then encode chain."""
+        cmd = build_assembly_cmd(TestAssemblyCmd.PLAN, {"a.mp4": True, "b.mp4": True},
+                                 TestAssemblyCmd.CARDS, "out.mp4", music_track=None,
+                                 clip_luts={"a.mp4": "d.cube"},
+                                 body_overlay="drawtext=text='addr'")
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        chain = [f for f in graph.split(";") if f.startswith("[1:v]")][0]
+        assert chain.index("lut3d") < chain.index("scale") < chain.index("drawtext")
+
+
+class TestPhotoPlan:
+    PHOTOS = [f"DJI_2026070{i}.JPG" for i in range(1, 9)]
+
+    def test_structure(self):
+        plan = plan_photo_reel(self.PHOTOS, 60)
+        assert plan[0] == {"type": "card", "card": "intro", "dur": INTRO_S}
+        assert plan[-1] == {"type": "card", "card": "outro", "dur": OUTRO_S}
+        assert all(p["type"] == "photo" for p in plan[1:-1])
+
+    def test_timeline_hits_target(self):
+        plan = plan_photo_reel(self.PHOTOS, 60)
+        assert plan_duration(plan) == pytest.approx(60, abs=1.0)
+
+    def test_even_spread_keeps_order_and_endpoints(self):
+        plan = plan_photo_reel(self.PHOTOS, 45)
+        picked = [p["path"] for p in plan if p["type"] == "photo"]
+        assert picked == sorted(picked)
+        if len(picked) < len(self.PHOTOS):
+            assert picked[0] == self.PHOTOS[0]
+            assert picked[-1] == self.PHOTOS[-1]
+
+    def test_map_card_before_outro(self):
+        plan = plan_photo_reel(self.PHOTOS, 60, map_card=True)
+        assert plan[-2] == {"type": "card", "card": "map", "dur": MAP_S}
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError):
+            plan_photo_reel([], 60)
+
+
+class TestPhotoAssembly:
+    PLAN = [
+        {"type": "card", "card": "intro", "dur": 3.0},
+        {"type": "photo", "path": "p1.jpg", "dur": 5.5},
+        {"type": "photo", "path": "p2.jpg", "dur": 5.5},
+        {"type": "card", "card": "outro", "dur": 4.0},
+    ]
+    CARDS = {"intro": "intro.png", "outro": "outro.png"}
+
+    def test_photo_inputs_not_seeked(self):
+        cmd = build_assembly_cmd(self.PLAN, {}, self.CARDS, "out.mp4",
+                                 music_track="pool/track.wav")
+        p1 = cmd.index("p1.jpg")
+        assert cmd[p1 - 1] == "-i" and cmd[p1 - 2] != "-ss"
+
+    def test_photos_get_kenburns(self):
+        cmd = build_assembly_cmd(self.PLAN, {}, self.CARDS, "out.mp4",
+                                 music_track="pool/track.wav")
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert graph.count("zoompan") == 2
+        assert graph.count("xfade=") == 3
+
+    def test_photos_silent_in_native_mode(self):
+        cmd = build_assembly_cmd(self.PLAN, {}, self.CARDS, "out.mp4",
+                                 music_track=None)
+        # 2 cards + 2 soundless photos -> 4 silence sources
+        assert cmd.count("anullsrc=r=48000:cl=stereo") == 4
+
+    def test_kenburns_moves_alternate(self):
+        moves = {_kenburns_filter(i, 5.5, 3840, 2160) for i in range(4)}
+        assert len(moves) == 4                     # all four variants distinct
+        assert _kenburns_filter(0, 5.5, 3840, 2160) == \
+            _kenburns_filter(4, 5.5, 3840, 2160)   # deterministic cycle
+
+    def test_kenburns_outputs_master_geometry(self):
+        atom = _kenburns_filter(0, 5.5, 3840, 2160)
+        assert "s=3840x2160" in atom and "fps=30" in atom
+
+
+class TestAgentCardFlag:
+    AGENT = {"name": "Jane Realtor", "phone": "757-555-0100"}
+
+    def test_flag_off_forces_sai_outro(self, tmp_path):
+        with_flag_off = make_card(
+            "outro", {"agent": self.AGENT, "render": {"agent_card": False}},
+            str(tmp_path / "off.png"))
+        no_agent = make_card("outro", {"agent": None}, str(tmp_path / "none.png"))
+        assert (tmp_path / "off.png").read_bytes() == (tmp_path / "none.png").read_bytes()
+
+    def test_default_keeps_agent(self, tmp_path):
+        with_agent = make_card("outro", {"agent": self.AGENT},
+                               str(tmp_path / "agent.png"))
+        no_agent = make_card("outro", {"agent": None}, str(tmp_path / "none.png"))
+        assert (tmp_path / "agent.png").read_bytes() != (tmp_path / "none.png").read_bytes()
