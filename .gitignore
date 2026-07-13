@@ -11,3 +11,4 @@ test-footage/
 
 # local runtime settings (may hold OAuth client secret — never commit)
 sortie_settings.json
+rtklib/rnx2rtkp.exe
