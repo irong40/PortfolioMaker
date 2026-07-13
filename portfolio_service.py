@@ -309,6 +309,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
 
     # 9. AI analysis + image preparation + report generation
     report_result = None
+    report_data = None
     try:
         from report_generator import generate_report
 
@@ -456,6 +457,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         "preset": preset,
         "date": date_str,
         "report": report_result,
+        "report_data": report_data,
     }
     if report_result is None:
         result["warning"] = "Report generation failed"

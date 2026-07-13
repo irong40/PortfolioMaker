@@ -1723,6 +1723,12 @@ class PortfolioMakerApp:
                         progress_cb("crm", f"{crm_job.job_number} → complete")
                     else:
                         progress_cb("crm", "CRM update failed (continuing)")
+                    report_id = crm_sync.push_report(crm_job, result)
+                    if report_id:
+                        progress_cb("crm", f"report draft created in CRM "
+                                           f"({crm_job.job_number})")
+                    else:
+                        progress_cb("crm", "no CRM report draft (skipped or failed)")
                 elif crm_job:
                     crm_sync.mark_failed(crm_job.id, result.get("error", "unknown"))
 
