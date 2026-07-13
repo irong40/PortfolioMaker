@@ -38,6 +38,7 @@ from mipmap_service import check_mipmap
 from ppk_service import detect_rinex, run_ppk_correction
 from drive_delivery import is_authenticated, authenticate, deliver as drive_deliver
 from mission_planner import MissionPlannerDialog
+import crm_sync
 from property_highlights import render_highlights, find_matching_kml
 
 # ─── SETTINGS PERSISTENCE ────────────────────────────────────────────────────
@@ -67,6 +68,8 @@ def save_settings(settings):
     """Save settings dict to disk."""
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
+
+CRM_MANUAL_CHOICE = "Manual (no CRM link)"
 
 # ─── COLORS / STYLE ────────────────────────────────────────────────────────
 
@@ -153,6 +156,8 @@ class PortfolioMakerApp:
         self._ppk_rinex = None
         self._ppk_corrected = False
         self._cancel_event = None
+        self._crm_missions = []
+        self._crm_job = None
         self._settings = load_settings()
 
         configure_styles()
@@ -184,6 +189,9 @@ class PortfolioMakerApp:
 
         # Check NodeODM in background
         threading.Thread(target=self._check_nodeodm_bg, daemon=True).start()
+
+        # Load CRM missions in background (fails soft to manual mode)
+        threading.Thread(target=self._load_crm_missions_bg, daemon=True).start()
 
         # Check for PPK data if a source folder is already set
         saved_source = self._settings.get("source_dir", "")
@@ -431,6 +439,27 @@ class PortfolioMakerApp:
 
         # Add padding inside the content frame
         self._content.configure(padding=(14, 10, 14, 0))
+
+        # CRM mission link (optional — sortie stays fully manual without it)
+        crm_frame = ttk.LabelFrame(self._content, text="CRM Mission (optional)", padding=10)
+        crm_frame.pack(fill="x", pady=(0, 8))
+
+        crm_row = ttk.Frame(crm_frame)
+        crm_row.pack(fill="x")
+        ttk.Label(crm_row, text="Mission:").pack(side="left")
+        self.crm_mission_var = tk.StringVar(value=CRM_MANUAL_CHOICE)
+        self._crm_combo = ttk.Combobox(
+            crm_row, textvariable=self.crm_mission_var,
+            values=[CRM_MANUAL_CHOICE], state="readonly")
+        self._crm_combo.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        self._crm_combo.bind("<<ComboboxSelected>>", self._on_crm_mission_selected)
+        ttk.Button(crm_row, text="Refresh", command=self._on_crm_refresh,
+                   style="Secondary.TButton").pack(side="left", padx=(6, 0))
+
+        self._crm_hint_var = tk.StringVar(value="Checking CRM…")
+        ttk.Label(crm_frame, textvariable=self._crm_hint_var,
+                  font=(FONT_FAMILY, 8), foreground=TEXT_DIM,
+                  wraplength=680, justify="left").pack(anchor="w", pady=(4, 0))
 
         # Photo folder
         src_frame = ttk.LabelFrame(self._content, text="Photo Folder", padding=10)
@@ -1124,6 +1153,77 @@ class PortfolioMakerApp:
         self._mipmap_ok = check_mipmap()
         self.root.after(0, self._update_mipmap_indicator)
 
+    # ── CRM mission link ──
+
+    def _load_crm_missions_bg(self):
+        """Fetch open CRM missions off the GUI thread; degrade to manual mode."""
+        if not crm_sync.is_configured():
+            self.root.after(0, self._crm_hint_var.set,
+                            "CRM not configured — set SUPABASE_URL / SUPABASE_SERVICE_KEY "
+                            "in .env to link missions. Manual mode works as always.")
+            return
+        missions = crm_sync.fetch_open_missions()
+        self.root.after(0, self._populate_crm_dropdown, missions)
+
+    def _populate_crm_dropdown(self, missions):
+        self._crm_missions = missions
+        choices = [CRM_MANUAL_CHOICE] + [m.label for m in missions]
+        self._crm_combo.configure(values=choices)
+        if missions:
+            self._crm_hint_var.set(
+                f"{len(missions)} open mission(s) in the CRM. Pick one to prefill "
+                "this job and report progress back automatically.")
+        else:
+            self._crm_hint_var.set(
+                "CRM reachable, but no open missions (intake/scheduled/captured/"
+                "uploaded). Manual mode.")
+        # Keep the current selection valid
+        if self.crm_mission_var.get() not in choices:
+            self.crm_mission_var.set(CRM_MANUAL_CHOICE)
+            self._crm_job = None
+
+    def _on_crm_refresh(self):
+        self._crm_hint_var.set("Refreshing CRM missions…")
+        threading.Thread(target=self._load_crm_missions_bg, daemon=True).start()
+
+    def _on_crm_mission_selected(self, event=None):
+        choice = self.crm_mission_var.get()
+        if choice == CRM_MANUAL_CHOICE:
+            self._crm_job = None
+            self._crm_hint_var.set("Manual mode — no CRM link for this job.")
+            return
+
+        mission = next((m for m in self._crm_missions if m.label == choice), None)
+        if mission is None:
+            return
+        self._crm_job = mission
+
+        # Prefill job fields from the CRM record (all still editable)
+        self.site_name_var.set(mission.suggested_site_name())
+        if hasattr(self, "parcel_address_var") and mission.address:
+            full = ", ".join(p for p in (mission.address, mission.city, mission.state) if p)
+            self.parcel_address_var.set(full)
+        suggested = mission.suggested_job_type()
+        if suggested:
+            self.job_type_var.set(suggested)
+
+        bits = []
+        if mission.client_name:
+            client = mission.client_name
+            if mission.client_company:
+                client += f" ({mission.client_company})"
+            bits.append(f"Client: {client}")
+        if mission.template_name:
+            code = f"{mission.path_code} — " if mission.path_code else ""
+            bits.append(f"CRM job type: {code}{mission.template_name}")
+        if suggested is None and mission.preset_name:
+            bits.append("no sortie preset match — pick the job type manually")
+        if mission.pilot_notes:
+            bits.append(f"Pilot notes: {mission.pilot_notes}")
+        self._crm_hint_var.set(
+            f"Linked to {mission.job_number} — progress will update the CRM. "
+            + " | ".join(bits))
+
     def _update_nodeodm_indicator(self, info):
         self._nodeodm_dot.delete("all")
         if info:
@@ -1593,11 +1693,18 @@ class PortfolioMakerApp:
         custom_output = self.output_var.get().strip() or None
         msg_queue = queue.Queue()
         cancel_event = self._cancel_event
+        crm_job = self._crm_job  # snapshot — GUI selection may change mid-run
 
         def run():
             try:
                 def progress_cb(stage, detail):
                     msg_queue.put(("stage", stage, detail))
+
+                if crm_job:
+                    if crm_sync.mark_processing(crm_job.id, photo_count=photo_count):
+                        progress_cb("crm", f"{crm_job.job_number} → processing")
+                    else:
+                        progress_cb("crm", "CRM update failed (continuing)")
 
                 result = process_job(
                     source_dir=source,
@@ -1610,9 +1717,20 @@ class PortfolioMakerApp:
                     output_dir=custom_output,
                     cancel_event=cancel_event,
                 )
+
+                if crm_job and "error" not in result:
+                    if crm_sync.mark_complete(crm_job.id, result):
+                        progress_cb("crm", f"{crm_job.job_number} → complete")
+                    else:
+                        progress_cb("crm", "CRM update failed (continuing)")
+                elif crm_job:
+                    crm_sync.mark_failed(crm_job.id, result.get("error", "unknown"))
+
                 msg_queue.put(("done", result))
             except Exception as e:
                 traceback.print_exc()
+                if crm_job:
+                    crm_sync.mark_failed(crm_job.id, e)
                 msg_queue.put(("error", str(e)))
 
         threading.Thread(target=run, daemon=True).start()
@@ -1876,6 +1994,8 @@ class PortfolioMakerApp:
 
         threading.Thread(target=run, daemon=True).start()
 
+        crm_job = self._crm_job
+
         def on_done(result):
             try:
                 self.progress_var.set(100)
@@ -1885,6 +2005,14 @@ class PortfolioMakerApp:
                 self._log(f"Files uploaded: {count}")
                 self._log(f"Share link: {link}")
                 self.status_var.set("Delivered!")
+
+                if crm_job:
+                    def push_link():
+                        ok = crm_sync.record_delivery(crm_job.id, link)
+                        msg = (f"CRM: Drive link saved to {crm_job.job_number}"
+                               if ok else "CRM: could not save Drive link")
+                        self.root.after(0, self._log, msg)
+                    threading.Thread(target=push_link, daemon=True).start()
 
                 # Copy link to clipboard
                 self.root.clipboard_clear()

@@ -8,3 +8,6 @@ video-queue/
 reel-queue/
 music-pool/
 test-footage/
+
+# local runtime settings (may hold OAuth client secret — never commit)
+sortie_settings.json
