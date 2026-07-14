@@ -8,16 +8,36 @@ Requirements:
     pip install google-api-python-client google-auth-oauthlib
 """
 
+import logging
 import os
 import json
 import mimetypes
+import time
 from pathlib import Path
 
 from google.oauth2.credentials import Credentials
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
+
+log = logging.getLogger(__name__)
 
 TOKEN_PATH = Path.home() / ".sortie" / "drive_token.json"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+
+class DriveUnavailableError(Exception):
+    """Google token refresh failed transiently (network/5xx) — the saved
+    grant is still good, so re-auth is the wrong response. Retry later."""
+
+
+# invalid_grant = token expired/revoked server-side; re-auth is required.
+# Anything else from a refresh attempt is treated as transient.
+_REVOKED_MARKERS = ("invalid_grant", "expired or revoked")
+
+
+def _is_revoked(exc):
+    text = str(exc).lower()
+    return any(marker in text for marker in _REVOKED_MARKERS)
 
 # OAuth client — registered under Faith & Harmony GCP project.
 # drive.file scope only grants access to files this app creates, not the full Drive.
@@ -75,21 +95,50 @@ def _build_service(creds):
     return build("drive", "v3", credentials=creds)
 
 
-def is_authenticated():
-    """Check if we have a valid (or refreshable) Drive token."""
+def is_authenticated(retry_delay=2):
+    """Check if we have a valid (or refreshable) Drive token.
+
+    Returns False only when browser re-auth is genuinely needed: no token
+    file, an unreadable token file, no refresh token, or Google reports the
+    grant revoked (invalid_grant). A refresh that fails for any other
+    reason (network blip, Google 5xx) raises DriveUnavailableError after
+    one retry — callers must NOT treat that as "signed out".
+    """
     if not TOKEN_PATH.exists():
         return False
     try:
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-        if creds.valid:
-            return True
-        if creds.expired and creds.refresh_token:
+    except (ValueError, KeyError, OSError) as e:
+        log.warning("Drive token file unreadable (%s) — re-auth required", e)
+        return False
+
+    if creds.valid:
+        return True
+    if not (creds.expired and creds.refresh_token):
+        return False
+
+    last_error = None
+    for attempt in (1, 2):
+        try:
             creds.refresh(Request())
             _save_token(creds)
             return True
-    except Exception:
-        pass
-    return False
+        except RefreshError as e:
+            if _is_revoked(e):
+                log.warning("Drive grant revoked (%s) — re-auth required", e)
+                return False
+            last_error = e
+        except Exception as e:
+            last_error = e
+        if attempt == 1:
+            log.warning("Drive token refresh failed (%s) — retrying", last_error)
+            time.sleep(retry_delay)
+
+    raise DriveUnavailableError(
+        f"Google Drive is temporarily unreachable (token refresh failed "
+        f"twice: {last_error}). The saved sign-in is still valid — "
+        f"try again in a minute."
+    )
 
 
 def authenticate():

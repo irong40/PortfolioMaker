@@ -36,7 +36,10 @@ from portfolio_service import (
 )
 from mipmap_service import check_mipmap
 from ppk_service import detect_rinex, run_ppk_correction
-from drive_delivery import is_authenticated, authenticate, deliver as drive_deliver
+from drive_delivery import (
+    DriveUnavailableError, is_authenticated, authenticate,
+    deliver as drive_deliver,
+)
 from mission_planner import MissionPlannerDialog
 import crm_sync
 from property_highlights import render_highlights, find_matching_kml
@@ -1953,8 +1956,16 @@ class PortfolioMakerApp:
         site = self.site_name_var.get().strip() or "Delivery"
         folder_name = f"SAI — {site}"
 
-        # Check auth
-        if not is_authenticated():
+        # Check auth. Transient refresh failures are NOT a disconnect —
+        # only a missing/revoked grant should open the sign-in browser.
+        try:
+            drive_ready = is_authenticated()
+        except DriveUnavailableError as e:
+            self._log(f"Google Drive: {e}")
+            messagebox.showwarning("Drive Temporarily Unreachable", str(e))
+            self.status_var.set("Drive unreachable — try again shortly")
+            return
+        if not drive_ready:
             self._log("Google Drive: not authenticated — opening browser...")
             self.status_var.set("Waiting for Google sign-in...")
             try:

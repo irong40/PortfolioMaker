@@ -1,6 +1,58 @@
-"""Tests for drive_delivery — delivery file collection policy."""
+"""Tests for drive_delivery — delivery file collection policy + auth check."""
 
-from drive_delivery import collect_delivery_files
+import pytest
+from unittest.mock import MagicMock, patch
+
+from google.auth.exceptions import RefreshError
+
+import drive_delivery
+from drive_delivery import (
+    DriveUnavailableError, collect_delivery_files, is_authenticated,
+)
+
+
+class TestIsAuthenticated:
+    """is_authenticated must only return False when re-auth is truly needed;
+    transient refresh failures raise DriveUnavailableError instead."""
+
+    def _creds(self, mocker, refresh_side_effect=None):
+        creds = MagicMock()
+        creds.valid = False
+        creds.expired = True
+        creds.refresh_token = "rt"
+        if refresh_side_effect is not None:
+            creds.refresh.side_effect = refresh_side_effect
+        mocker.patch.object(drive_delivery.Credentials,
+                            "from_authorized_user_file", return_value=creds)
+        mocker.patch.object(drive_delivery, "TOKEN_PATH",
+                            MagicMock(exists=MagicMock(return_value=True)))
+        mocker.patch.object(drive_delivery, "_save_token")
+        return creds
+
+    def test_no_token_file_needs_reauth(self, mocker):
+        mocker.patch.object(drive_delivery, "TOKEN_PATH",
+                            MagicMock(exists=MagicMock(return_value=False)))
+        assert is_authenticated() is False
+
+    def test_refresh_success(self, mocker):
+        self._creds(mocker)
+        assert is_authenticated() is True
+
+    def test_revoked_grant_needs_reauth(self, mocker):
+        self._creds(mocker, RefreshError(
+            "invalid_grant: Token has been expired or revoked."))
+        assert is_authenticated() is False
+
+    def test_transient_failure_raises_not_false(self, mocker):
+        self._creds(mocker, ConnectionError("connection reset"))
+        with pytest.raises(DriveUnavailableError):
+            is_authenticated(retry_delay=0)
+
+    def test_transient_failure_retries_once_then_succeeds(self, mocker):
+        creds = self._creds(mocker,
+                            [ConnectionError("connection reset"), None])
+        assert is_authenticated(retry_delay=0) is True
+        assert creds.refresh.call_count == 2
 
 
 class TestCollectDeliveryFiles:
