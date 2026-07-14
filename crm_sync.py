@@ -219,7 +219,11 @@ def update_mission(job_id, fields, timeout=REQUEST_TIMEOUT):
         resp.raise_for_status()
         return True
     except Exception as e:
-        log.warning("CRM update failed for %s: %s", job_id, e)
+        detail = ""
+        body = getattr(getattr(e, "response", None), "text", None)
+        if body:
+            detail = f" — {body[:300]}"
+        log.warning("CRM update failed for %s: %s%s", job_id, e, detail)
         return False
 
 
@@ -243,7 +247,9 @@ def mark_complete(job_id, result):
     fields = {
         "status": "complete",
         "processing_completed_at": _utc_now(),
-        "photogrammetry_status": "complete",
+        # drone_jobs.status and photogrammetry_status are DIFFERENT enums:
+        # status uses 'complete', photogrammetry_status uses 'completed'.
+        "photogrammetry_status": "completed",
         "output_path": str(result.get("output_dir") or ""),
         "delivery_status": "ready",
     }
