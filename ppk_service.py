@@ -44,6 +44,10 @@ RTKLIB_DOWNLOAD_URL = (
 CORS_S3_BASE = "https://noaa-cors-pds.s3.amazonaws.com"
 CORS_STATIONS_JSON = SCRIPT_DIR / "cors_stations.json"
 
+# NOAA daily CORS files are decimated to 30-second epochs, so short rover
+# captures overlap too few base epochs for ambiguity resolution to converge.
+MIN_RECOMMENDED_OBS_MINUTES = 8
+
 # DJI M4E file patterns
 RINEX_OBS_PATTERNS = ["*.obs", "*.OBS", "*_rover.obs", "Rinex.obs"]
 RINEX_NAV_PATTERNS = ["*.nav", "*.NAV", "*.brdc", "*.BRDC", "*.*n", "*.*N"]
@@ -189,23 +193,39 @@ def _extract_approx_position_from_obs(obs_path):
     return None, None
 
 
-def _extract_flight_date_from_obs(obs_path):
-    """Read flight date from RINEX OBS header TIME OF FIRST OBS."""
+def _extract_obs_time_range(obs_path):
+    """Read TIME OF FIRST OBS / TIME OF LAST OBS from a RINEX OBS header.
+
+    Returns (first, last) as UTC datetimes; either may be None.
+    """
+    first = last = None
     try:
         with open(obs_path, "r", errors="ignore") as f:
             for line in f:
-                if "TIME OF FIRST OBS" in line:
+                if "TIME OF FIRST OBS" in line or "TIME OF LAST OBS" in line:
                     parts = line.split()
-                    return datetime(
-                        int(parts[0]), int(parts[1]), int(parts[2]),
-                        int(parts[3]), int(parts[4]), int(float(parts[5])),
-                        tzinfo=timezone.utc,
-                    )
+                    try:
+                        ts = datetime(
+                            int(parts[0]), int(parts[1]), int(parts[2]),
+                            int(parts[3]), int(parts[4]), int(float(parts[5])),
+                            tzinfo=timezone.utc,
+                        )
+                    except (ValueError, IndexError):
+                        continue
+                    if "FIRST" in line:
+                        first = ts
+                    else:
+                        last = ts
                 if "END OF HEADER" in line:
                     break
-    except (OSError, ValueError, IndexError):
+    except OSError:
         pass
-    return None
+    return first, last
+
+
+def _extract_flight_date_from_obs(obs_path):
+    """Read flight date from RINEX OBS header TIME OF FIRST OBS."""
+    return _extract_obs_time_range(obs_path)[0]
 
 
 def detect_rinex(source_dir):
@@ -246,12 +266,17 @@ def detect_rinex(source_dir):
     if not result.has_minimum:
         return None
 
-    # Extract approximate position and date from OBS header
+    # Extract approximate position, date, and capture duration from OBS header
     if result.obs_file:
         result.approx_lat, result.approx_lon = _extract_approx_position_from_obs(
             result.obs_file
         )
-        result.flight_date = _extract_flight_date_from_obs(result.obs_file)
+        first_obs, last_obs = _extract_obs_time_range(result.obs_file)
+        result.flight_date = first_obs
+        if first_obs and last_obs and last_obs > first_obs:
+            result.flight_duration_minutes = round(
+                (last_obs - first_obs).total_seconds() / 60.0, 1
+            )
 
     log.info(f"PPK data detected in {source_dir}")
     log.info(f"  OBS: {result.obs_file or 'not found'}")
@@ -846,6 +871,14 @@ def run_ppk_correction(rinex, source_dir=None, progress_callback=None):
         result.error = "No MRK timestamp file found"
         return result
 
+    if (rinex.flight_duration_minutes is not None
+            and rinex.flight_duration_minutes < MIN_RECOMMENDED_OBS_MINUTES):
+        emit("validate", (
+            f"Warning: RINEX capture is only {rinex.flight_duration_minutes:.1f} min. "
+            f"PPK rarely converges against 30-second CORS base data under "
+            f"{MIN_RECOMMENDED_OBS_MINUTES} min — expect fallback to raw GPS."
+        ))
+
     # Step 2: Get approximate position
     if rinex.approx_lat is None:
         emit("validate", "No approximate position in RINEX header — reading from photos")
@@ -888,7 +921,14 @@ def run_ppk_correction(rinex, source_dir=None, progress_callback=None):
         emit("cors", f"  {station.station_id} unavailable, trying next...")
 
     if not cors_obs:
-        result.error = "Failed to download CORS data from any nearby station"
+        if flight_date.date() >= datetime.now(timezone.utc).date():
+            result.error = (
+                "CORS base data for today isn't published yet — NOAA posts "
+                "daily station files after the UTC day ends. Re-run PPK on "
+                "this folder tomorrow; the RINEX files stay with the photos."
+            )
+        else:
+            result.error = "Failed to download CORS data from any nearby station"
         return result
 
     result.cors_station = chosen_station.station_id
@@ -1026,6 +1066,11 @@ def main():
         print(f"  Position: {rinex.approx_lat:.4f}, {rinex.approx_lon:.4f}")
     if rinex.flight_date:
         print(f"  Date: {rinex.flight_date.strftime('%Y-%m-%d %H:%M UTC')}")
+    if rinex.flight_duration_minutes is not None:
+        print(f"  Capture: {rinex.flight_duration_minutes:.1f} min")
+        if rinex.flight_duration_minutes < MIN_RECOMMENDED_OBS_MINUTES:
+            print(f"  Warning: captures under {MIN_RECOMMENDED_OBS_MINUTES} min "
+                  "rarely converge to fixed PPK solutions.")
 
     if args.dry_run:
         if rinex.approx_lat:

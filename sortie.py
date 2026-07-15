@@ -35,7 +35,8 @@ from portfolio_service import (
     check_nodeodm, scan_for_job, process_job, portfolio_only, PORTFOLIO_ROOT,
 )
 from mipmap_service import check_mipmap
-from ppk_service import detect_rinex, run_ppk_correction
+from ppk_service import (detect_rinex, run_ppk_correction,
+                         MIN_RECOMMENDED_OBS_MINUTES)
 from drive_delivery import (
     DriveUnavailableError, is_authenticated, authenticate,
     deliver as drive_deliver,
@@ -621,7 +622,15 @@ class PortfolioMakerApp:
             detail += f"\n  NAV: {Path(rinex.nav_file).name}"
         if rinex.approx_lat:
             detail += f"\n  Position: {rinex.approx_lat:.4f}, {rinex.approx_lon:.4f}"
+        if rinex.flight_duration_minutes is not None:
+            detail += f"\n  Capture: {rinex.flight_duration_minutes:.1f} min"
         detail += "\n\nRun PPK correction to get cm-accurate photo coordinates before processing."
+        if (rinex.flight_duration_minutes is not None
+                and rinex.flight_duration_minutes < MIN_RECOMMENDED_OBS_MINUTES):
+            detail += (
+                f"\n⚠ Capture is under {MIN_RECOMMENDED_OBS_MINUTES} min — "
+                "PPK is unlikely to converge; photos keep raw GPS if it doesn't."
+            )
         self._ppk_detail_var.set(detail)
         self._ppk_status_label.configure(text="Ready")
         self._ppk_progress_var.set("")
