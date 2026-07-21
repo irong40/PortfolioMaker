@@ -8,6 +8,7 @@ No GUI dependency — called by sortie.py or CLI.
 import os
 import sys
 import json
+import time
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -120,6 +121,14 @@ def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
         (task_uuid, task_info) on success, (None, error_msg) on failure.
     """
     url = base_url or NODEODM_URL
+
+    # WSL/NodeODM is on-demand since 2026-07-21 (parked between jobs) — boot it
+    # before first submit rather than failing on a cold stack.
+    if not _check_nodeodm(url):
+        _nodeodm_recovery()
+        deadline = time.time() + 150
+        while time.time() < deadline and not _check_nodeodm(url):
+            time.sleep(10)
 
     task_uuid = submit_task(url, photo_paths, options=odm_options, name=task_name)
     if not task_uuid:
