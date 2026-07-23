@@ -245,6 +245,15 @@ def build_splat_task_json(
         "generate_geotiff": False,
         "generate_tile_2D": False,
         "resolution_level": resolution_level,
+        # Engine >= 5.1.0.3 requires the input image CRS; DJI EXIF GPS is
+        # WGS 84 geographic. Validation rejects the task without it.
+        # Values match a GUI-generated task.json (captured 2026-07-22).
+        "coordinate_system": {
+            "type": 2,
+            "type_name": "Geographic",
+            "label": "WGS 84",
+            "epsg_code": 4326,
+        },
         "coordinate_system_2d": {
             "type": 3,
             "type_name": "Projected",
@@ -316,7 +325,7 @@ def launch_mipmap_stage(task_json_path, reconstruct_type, log_path, progress_cal
     ]
 
     log.info("Launching MipMap stage %d: %s", reconstruct_type, " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     stop_event = threading.Event()
 
@@ -327,10 +336,15 @@ def launch_mipmap_stage(task_json_path, reconstruct_type, log_path, progress_cal
     )
     t.start()
 
-    proc.wait()
+    _, stderr = proc.communicate()
     stop_event.set()
     t.join(timeout=2)
 
+    if proc.returncode != 0 and stderr:
+        # The engine reports task-JSON validation and license errors only on
+        # stderr, before it opens its log file.
+        log.error("MipMap stage %d stderr: %s",
+                  reconstruct_type, stderr.decode(errors="replace").strip())
     log.info("MipMap stage %d finished with returncode %d", reconstruct_type, proc.returncode)
     return proc.returncode
 
