@@ -113,6 +113,26 @@ def to_wsl_path(win_path) -> str:
     return f"/mnt/{drive}/{rest}"
 
 
+def pick_downscale_factor(photo_count, base=2):
+    """Photo-count downscale heuristic (RAM is the scale limiter, not VRAM).
+
+    OpenSplat preloads ALL images as float32 (~12 B/px + pyramid cache)
+    into the 20 GB WSL VM. Measured/derived anchors: d=1 stalls 12 GB VRAM
+    at ANY count (2026-07-22); 905 photos at 20.9 MP needs d≈5 to fit in
+    RAM (plan D9). Returns max(base, heuristic) — never below the preset's
+    floor, refined at the Phase 4 gate.
+    """
+    if photo_count <= 150:
+        heuristic = 2
+    elif photo_count <= 400:
+        heuristic = 3
+    elif photo_count <= 700:
+        heuristic = 4
+    else:
+        heuristic = 5
+    return max(base, heuristic)
+
+
 # ─── PROJECT ASSEMBLY ────────────────────────────────────────────────────────
 
 def extract_opensfm(all_zip, project_dir) -> Path:
@@ -163,7 +183,11 @@ def rewrite_image_list(opensfm_dir, container_images_dir=None) -> list:
         bn = line.rsplit("/", 1)[-1]
         basenames.append(bn)
         lines.append(f"{container_images_dir}/{bn}")
-    list_path.write_text("\n".join(lines) + "\n")
+    # LF only — this file is consumed inside the Linux container, and
+    # Windows text-mode CRLF turns every path into "...JPG\r" (file not
+    # found at image-load time). Bug found live 2026-07-23.
+    with open(list_path, "w", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
     return basenames
 
 
@@ -223,7 +247,8 @@ def run_opensplat_pipeline(
         num_iters: Training iterations (30000 default).
         downscale_factor: OpenSplat -d. VRAM/RAM lever; 23 photos at d=1
             filled ~11.7 of 12 GB VRAM during densification (measured
-            2026-07-22) — keep >=2 for real jobs, revisit per Phase 4.
+            2026-07-22) — keep >=2 for real jobs. Automatically raised by
+            pick_downscale_factor() for large photo counts (RAM ceiling).
         all_zip: Path to the NodeODM all.zip (default: working_dir/all.zip).
 
     Returns:
@@ -263,6 +288,12 @@ def run_opensplat_pipeline(
         result["error"] = "preflight failed: " + "; ".join(problems[:5])
         log.error(result["error"])
         return result
+
+    effective_d = pick_downscale_factor(len(basenames), base=downscale_factor)
+    if effective_d != downscale_factor:
+        log.info("Downscale raised %s -> %s for %d photos (RAM ceiling)",
+                 downscale_factor, effective_d, len(basenames))
+    downscale_factor = effective_d
 
     if progress_callback:
         progress_callback(0.0)

@@ -13,6 +13,7 @@ from opensplat_service import (
     extract_opensfm,
     rewrite_image_list,
     preflight_project,
+    pick_downscale_factor,
     run_opensplat_pipeline,
     copy_splat_outputs,
     FAILURE_TAXONOMY,
@@ -85,6 +86,30 @@ class TestAssembly:
         assert basenames == SHOTS
         lines = (opensfm / "image_list.txt").read_text().splitlines()
         assert lines[0] == "/work/odm_project/images/DJI_0001.JPG"
+
+    def test_rewrite_writes_lf_only(self, all_zip, tmp_path):
+        """CRLF endings turn every path into '...JPG\\r' inside the Linux
+        container (live failure 2026-07-23) — the file must be pure LF."""
+        proj = tmp_path / "odm_project"
+        opensfm = extract_opensfm(all_zip, proj)
+        rewrite_image_list(opensfm)
+        raw = (opensfm / "image_list.txt").read_bytes()
+        assert b"\r" not in raw
+
+
+class TestDownscaleHeuristic:
+    def test_small_sets_keep_base(self):
+        assert pick_downscale_factor(23) == 2
+        assert pick_downscale_factor(150) == 2
+
+    def test_scale_tiers(self):
+        assert pick_downscale_factor(400) == 3
+        assert pick_downscale_factor(700) == 4
+        assert pick_downscale_factor(905) == 5
+        assert pick_downscale_factor(2000) == 5
+
+    def test_never_below_base(self):
+        assert pick_downscale_factor(23, base=4) == 4
 
 
 # ─── PREFLIGHT ───────────────────────────────────────────────────────────────
