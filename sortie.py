@@ -35,6 +35,7 @@ from portfolio_service import (
     check_nodeodm, scan_for_job, process_job, portfolio_only, PORTFOLIO_ROOT,
 )
 from mipmap_service import check_mipmap
+from opensplat_service import check_opensplat
 from ppk_service import (detect_rinex, run_ppk_correction,
                          MIN_RECOMMENDED_OBS_MINUTES)
 from drive_delivery import (
@@ -1161,7 +1162,9 @@ class PortfolioMakerApp:
         self._nodeodm_ok = info is not None
         self.root.after(0, self._update_nodeodm_indicator, info)
 
-        # Also check MipMap
+        # Also check the splat engines: OpenSplat (primary) with MipMap
+        # kept as the one-line-rollback fallback.
+        self._opensplat_ok = check_opensplat()
         self._mipmap_ok = check_mipmap()
         self.root.after(0, self._update_mipmap_indicator)
 
@@ -1247,13 +1250,19 @@ class PortfolioMakerApp:
             self._nodeodm_label.configure(text="NodeODM offline", fg=RED)
 
     def _update_mipmap_indicator(self):
+        """Splat-engine dot: OpenSplat is the primary engine; MipMap is the
+        rollback fallback and only shown when OpenSplat is unavailable."""
         self._mipmap_dot.delete("all")
-        if self._mipmap_ok:
+        if getattr(self, "_opensplat_ok", False):
             self._mipmap_dot.create_oval(1, 1, 9, 9, fill=GREEN, outline="")
-            self._mipmap_label.configure(text="MipMap installed", fg=GREEN)
+            self._mipmap_label.configure(text="OpenSplat ready", fg=GREEN)
+        elif self._mipmap_ok:
+            self._mipmap_dot.create_oval(1, 1, 9, 9, fill="#E67E22", outline="")
+            self._mipmap_label.configure(
+                text="OpenSplat missing (MipMap fallback)", fg="#E67E22")
         else:
             self._mipmap_dot.create_oval(1, 1, 9, 9, fill=RED, outline="")
-            self._mipmap_label.configure(text="MipMap not found", fg=RED)
+            self._mipmap_label.configure(text="No splat engine", fg=RED)
 
     # ── Job Description Update ──
 
@@ -1671,6 +1680,14 @@ class PortfolioMakerApp:
             messagebox.showerror("MipMap Not Found",
                 "MipMap Desktop is not installed at the expected path.\n\n"
                 "Install MipMap Desktop or use a different job type.")
+            return
+
+        # Splat jobs need BOTH: NodeODM (SfM poses) and the OpenSplat image.
+        if engine == "opensplat" and not getattr(self, "_opensplat_ok", False):
+            messagebox.showerror("OpenSplat Not Available",
+                "The OpenSplat docker image was not found in WSL.\n\n"
+                "Run start-nodeodm.ps1 to boot the stack, or see\n"
+                "opensplat-status.md in the vault if the image needs a rebuild.")
             return
 
         if engine != "mipmap" and not self._nodeodm_ok:

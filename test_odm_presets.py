@@ -35,8 +35,8 @@ class TestPresets:
 
     def test_odm_options_include_split_merge(self):
         for name, preset in PRESETS.items():
-            if preset.get("engine") == "mipmap":
-                continue  # MipMap presets don't use ODM options
+            if preset.get("engine") in ("mipmap", "opensplat"):
+                continue  # mipmap: no ODM at all; opensplat: split forbidden (below)
             option_names = {o["name"] for o in preset["odm_options"]}
             assert "split" in option_names, f"{name} missing split option"
             assert "split-overlap" in option_names, f"{name} missing split-overlap"
@@ -44,9 +44,20 @@ class TestPresets:
             # uploads against the parent task's slot (see _SPLIT_MERGE)
             assert "sm-cluster" not in option_names, f"{name} should not set sm-cluster"
 
+    def test_opensplat_preset_never_splits(self):
+        """D12: split-merge scatters opensfm/ under submodels/ and the splat
+        pipeline's pose files never land at the project root. The opensplat
+        preset must never carry split options or optimize-disk-space."""
+        preset = PRESETS["gaussian_splat"]
+        assert preset["engine"] == "opensplat"
+        option_names = {o["name"] for o in preset["odm_options"]}
+        for forbidden in ("split", "split-overlap", "optimize-disk-space"):
+            assert forbidden not in option_names, (
+                f"gaussian_splat must not set {forbidden}")
+
     def test_split_value_is_reasonable(self):
         for name, preset in PRESETS.items():
-            if preset.get("engine") == "mipmap":
+            if preset.get("engine") in ("mipmap", "opensplat"):
                 continue
             split_opt = next(o for o in preset["odm_options"] if o["name"] == "split")
             assert 50 <= split_opt["value"] <= 500, (
@@ -60,7 +71,8 @@ class TestPresets:
 
     def test_odm_presets_download_orthophoto(self):
         for name, preset in PRESETS.items():
-            if preset.get("engine") == "mipmap":
+            # splat engines produce a splat, not an orthophoto
+            if preset.get("engine") in ("mipmap", "opensplat"):
                 continue
             assert "orthophoto.tif" in preset["downloads"], f"{name} should download orthophoto"
 
@@ -73,22 +85,27 @@ class TestGaussianSplatPreset:
     def test_gaussian_splat_in_job_types(self):
         assert ("gaussian_splat", "Gaussian Splat") in JOB_TYPES
 
-    def test_engine_is_mipmap(self):
-        assert PRESETS["gaussian_splat"]["engine"] == "mipmap"
+    def test_engine_is_opensplat(self):
+        assert PRESETS["gaussian_splat"]["engine"] == "opensplat"
 
-    def test_no_odm_options(self):
-        assert PRESETS["gaussian_splat"]["odm_options"] == []
+    def test_odm_options_skip_deliverable_stages(self):
+        """SfM-for-poses only: no DSM/ortho/mesh work on splat jobs."""
+        opts = {o["name"]: o["value"] for o in PRESETS["gaussian_splat"]["odm_options"]}
+        assert opts.get("dsm") is False
+        assert opts.get("skip-orthophoto") is True
+        assert opts.get("skip-3dmodel") is True
 
     def test_photo_filter_none(self):
         assert PRESETS["gaussian_splat"]["photo_filter"] is None
 
     def test_downloads(self):
-        assert PRESETS["gaussian_splat"]["downloads"] == ["gs_ply", "gs_sog_tiles"]
+        assert PRESETS["gaussian_splat"]["downloads"] == ["gs_ply"]
 
-    def test_mipmap_settings(self):
-        settings = PRESETS["gaussian_splat"]["mipmap_settings"]
-        assert settings["resolution_level"] == 3
-        assert settings["mesh_decimate_ratio"] == 0.5
+    def test_opensplat_settings(self):
+        settings = PRESETS["gaussian_splat"]["opensplat_settings"]
+        assert settings["num_iters"] == 30000
+        # d>=2 is a hard floor on 12GB VRAM (measured 2026-07-22)
+        assert settings["downscale_factor"] >= 2
 
     def test_report_type(self):
         assert PRESETS["gaussian_splat"]["report_type"] == "gaussian_splat"

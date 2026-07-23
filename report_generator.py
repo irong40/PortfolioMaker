@@ -260,7 +260,12 @@ def _render_deliverables(elements, styles, data):
 def _render_methodology(elements, styles, data, has_ai):
     elements.append(Paragraph("Methodology", styles["SectionHeader"]))
     engine = data.get("engine", "nodeodm")
-    if engine == "mipmap":
+    if engine == "opensplat":
+        proc = ("Camera positions were solved photogrammetrically with "
+                "OpenDroneMap via NodeODM, and the scene was trained with "
+                "OpenSplat, an open-source 3D Gaussian Splatting "
+                "implementation, using GPU acceleration.")
+    elif engine == "mipmap":
         proc = ("Photogrammetric processing and Gaussian Splat generation were "
                 "performed using MipMap Desktop with optimized VRAM settings.")
     else:
@@ -585,7 +590,19 @@ def _render_vegetation_analysis(elements, styles, section, data):
 
 
 def _render_processing_details(elements, styles, data):
-    """Render MipMap processing details for gaussian_splat reports."""
+    """Render splat-engine processing details for gaussian_splat reports."""
+    opensplat = data.get("opensplat_settings", {})
+    if opensplat and data.get("engine") == "opensplat":
+        elements.append(Paragraph("Processing Details", styles["SectionHeader"]))
+        iters = opensplat.get("num_iters", 30000)
+        downscale = opensplat.get("downscale_factor", 2)
+        elements.append(Paragraph(
+            f"Gaussian Splat trained with OpenSplat for {iters:,} iterations "
+            f"at a {downscale}x image downscale on GPU. Output is a PLY "
+            f"gaussian point cloud suitable for interactive 3D viewing.",
+            styles["SentinelBody"],
+        ))
+        return
     mipmap = data.get("mipmap_settings", {})
     if not mipmap:
         return

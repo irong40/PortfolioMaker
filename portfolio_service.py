@@ -19,11 +19,18 @@ from photo_classifier import (
 )
 from odm_presets import get_preset
 from mipmap_service import run_mipmap_pipeline, copy_splat_outputs, check_mipmap
+from opensplat_service import (
+    run_opensplat_pipeline,
+    copy_splat_outputs as copy_opensplat_outputs,
+    check_opensplat,
+    OPENSFM_OUTPUTS,
+)
 from sentinel_core.nodeodm import (
     check_nodeodm as _check_nodeodm,
     submit_task,
     poll_task,
     download_outputs as _download_outputs,
+    fetch_all_zip,
 )
 
 PORTFOLIO_ROOT = os.environ.get("PORTFOLIO_ROOT", r"E:\Portfolio")
@@ -114,8 +121,12 @@ def _nodeodm_recovery():
 
 def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
                        base_url=None, poll_interval=30, max_hours=6,
-                       progress_callback=None, cancel_event=None):
+                       progress_callback=None, cancel_event=None,
+                       outputs=None):
     """Submit photos to NodeODM and poll until complete.
+
+    outputs: splat-preset-only archive override (see sentinel_core
+    submit_task docstring — it REPLACES the default deliverable list).
 
     Returns:
         (task_uuid, task_info) on success, (None, error_msg) on failure.
@@ -130,7 +141,8 @@ def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
         while time.time() < deadline and not _check_nodeodm(url):
             time.sleep(10)
 
-    task_uuid = submit_task(url, photo_paths, options=odm_options, name=task_name)
+    task_uuid = submit_task(url, photo_paths, options=odm_options, name=task_name,
+                            outputs=outputs)
     if not task_uuid:
         return None, "Task submission failed"
 
@@ -257,6 +269,60 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         notify("download", "Copying splat outputs")
         downloaded = copy_splat_outputs(working_dir, output_dir)
         notify("processing", "MipMap processing complete")
+    elif engine == "opensplat":
+        # OpenSplat pipeline: NodeODM SfM (pose-only archive via the
+        # `outputs` override) -> containerized GPU training.
+        opensplat_settings = preset.get("opensplat_settings", {})
+        working_dir = Path(output_dir) / "_opensplat_work"
+        staging_dir = working_dir / "photos"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        import shutil as _shutil
+        for photo in working_set.photos:
+            _shutil.copy2(photo.path, staging_dir / photo.filename)
+
+        photo_paths = [str(staging_dir / p.filename) for p in working_set.photos]
+        task_name = f"splat-{site_name[:20]}-{date_str}"
+        notify("submit", f"Submitting {len(photo_paths)} photos to NodeODM (SfM)")
+
+        def on_sfm_progress(pct):
+            notify("nodeodm_progress", f"{pct:.0f}")
+
+        task_uuid, result = submit_to_nodeodm(
+            photo_paths, preset["odm_options"], task_name=task_name,
+            base_url=base_url, progress_callback=on_sfm_progress,
+            cancel_event=cancel_event, outputs=OPENSFM_OUTPUTS,
+        )
+        if task_uuid is None:
+            return {"error": f"NodeODM SfM: {result}", "output_dir": output_dir,
+                    "classification": classification, "working_set": working_set}
+
+        # Fetch the pose archive IMMEDIATELY — task trees are ephemeral
+        # (48h cleanup, zero volume mounts) and the zip is only a few MB.
+        notify("download", "Fetching camera poses")
+        all_zip = working_dir / "all.zip"
+        if not fetch_all_zip(base_url or NODEODM_URL, task_uuid, str(all_zip)):
+            return {"error": "Failed to download pose archive from NodeODM",
+                    "output_dir": output_dir, "classification": classification,
+                    "working_set": working_set}
+
+        notify("submit", "Training Gaussian splat (OpenSplat GPU)")
+        splat_result = run_opensplat_pipeline(
+            photo_dir=str(staging_dir),
+            working_dir=working_dir,
+            progress_callback=lambda pct: notify(
+                "processing", f"OpenSplat {pct:.0f}%"),
+            num_iters=opensplat_settings.get("num_iters", 30000),
+            downscale_factor=opensplat_settings.get("downscale_factor", 2),
+            all_zip=all_zip,
+        )
+        if splat_result.get("returncode", 1) != 0:
+            return {"error": f"OpenSplat failed: {splat_result.get('error')}",
+                    "output_dir": output_dir, "classification": classification,
+                    "working_set": working_set}
+
+        notify("download", "Copying splat outputs")
+        downloaded = copy_opensplat_outputs(working_dir, output_dir)
+        notify("processing", "OpenSplat processing complete")
     else:
         # NodeODM pipeline
         photo_paths = [p.path for p in working_set.photos]
@@ -443,6 +509,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             "downloads": deliverables_index,
             "engine": engine,
             "mipmap_settings": preset.get("mipmap_settings", {}),
+            "opensplat_settings": preset.get("opensplat_settings", {}),
             "photos": photos,
             "ai_analysis": ai_analysis,
             "images": images,
@@ -462,7 +529,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         "classification": classification,
         "working_set": working_set,
         "downloaded": downloaded,
-        "task_uuid": None if engine == "mipmap" else task_uuid,
+        "task_uuid": task_uuid if engine != "mipmap" else None,
         "preset": preset,
         "date": date_str,
         "report": report_result,

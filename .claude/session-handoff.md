@@ -1,35 +1,29 @@
 # Session Handoff
-**Date:** 2026-07-12
-**Branch:** dev (head `575413c`, pushed — dev == origin/dev)
+**Date:** 2026-07-15
+**Branch:** dev (head `3f38e8e`, merged to main + pushed)
 
-## Accomplished
-- **GIS integration feature** (`38b9073`), all four parts Adam scoped:
-  1. VARI vegetation analysis pipeline step — `vegetation_analysis.py` bridges to drone-pipeline's headless QGIS script; preset-gated (`vegetation_analysis` flag, vegetation only); paths: env `QGIS_PYTHON`/`VEG_SCRIPT` > `sortie_settings.json` > defaults
-  2. GIS/veg outputs in deliverables + "VARI Vegetation Index Analysis" report section
-  3. Reel map card (`render.map_card`, all packages) — 3.0s flight-path card before outro; one polyline per clip SRT (never joined), 0.5s decimation, KML boundary fill; segmentation absorbs the duration
-  4. `gis_export.py` — photo points (GeoJSON+CSV), per-clip tracks (GeoJSON), mission KML in both `process_job` and `portfolio_only`
-- **/qcheckf refactor** (`c51ce22`): shared `load_tracks()` dedup
-- **GIS delivery policy locked by Adam** (`d376d1f`): client package gets GIS exports ONLY for property_survey / construction_progress / vegetation (`gis_delivery` preset flag); all other job types → internal `_gis/`. drive_delivery skips `_`-prefixed folders at any depth — also fixed pre-existing leak of `_report_thumbs/` + `_mipmap_work/` into client Drive packages
-- **Codex cross-model audit + hardening fixes** (`575413c`): GIS/VARI pipeline blocks and reel map-card call now survive any runtime error (were ImportError-only — a permissions/disk error could abort a paid job after ODM finished); veg out-dir mkdir guarded; tautological test assertion fixed
-- 428 tests passing; commit history AI-trailer-free per repo GH-2 rule
+## Accomplished (this session — PPK investigation + UX fixes)
+- **Root-caused "PPK never worked"** (Adam's report): two independent causes, neither a code bug in the 6/11 fix chain.
+  1. **Same-day CORS gap**: NOAA posts daily station RINEX only after the UTC day ends — verified live (ncel DOY 196 = 404, DOY 195/194 = 200). Any same-day PPK run fails with the generic "failed to download CORS data" error Adam saw.
+  2. **Convergence wall**: NOAA daily files are 30-second decimated; Hampton Roads stations have NO high-rate/raw data on noaa-cors-pds, and the RINEX 2.11 base is GPS+GLO only. Short captures (both real missions to date: 2.7 and 3.5 min) → ~1% fix rate → Sortie correctly refuses float writes. GLONASS-AR-off retest: no change.
+- **Full pipeline re-verified end-to-end** on a copy of `E:\DroneWorkflow\Input_Raw\DJI_202603191126_004_hemphaven` (91 photos): CORS download (ncel 20.9 km), brdc, rnx2rtkp 1040 solutions, 91/91 photos matched — mechanics all work.
+- **Shipped `3f38e8e`**: same-day CORS failure now returns a specific "re-run tomorrow" error; `detect_rinex` reads TIME OF LAST OBS → capture duration; GUI banner + CLI warn under 8 min (MIN_RECOMMENDED_OBS_MINUTES). 486 tests pass.
+- **Merged dev → main (ff, 13 commits) and pushed both branches** — CRM link, GIS/VARI, D-Log LUT, PPK fixes all now on main.
+- Debug journal: `obsidian-dev/debug-journal/2026-07-15-sortie-ppk-cors-same-day.md` (resolved).
 
 ## Next Steps
-- First live vegetation-mission run: verify the QGIS bridge on a real ortho end-to-end (bridge is subprocess-mock tested; the external script was live-tested 7/09 in drone-pipeline)
-- Practice flight validates the map card on real property-shoot tracks (fireworks corpus is hover-heavy → GPS jitter dominates at ~30 m extent)
-- GUI touchpoints offered, not yet requested: QGIS status indicator next to NodeODM check, Advanced settings fields for QGIS paths, GIS line in completion summary
-- Carried: Phase 4 Remotion templates, photos-only Ken Burns path, Phase 5 Sortie GUI reel queue + delivery wiring
+- **First real PPK proof**: post-calibration M4E mapping flight with 10+ min continuous RINEX capture, processed the NEXT day. Property Survey preset (gps-accuracy 0.02 assumes PPK — override if raw GPS).
+- Parking-lot survey flow confirmed: create CRM job first → Sortie dropdown → Property Survey preset (prefill, write-back, report push, ledger).
+- Carry-over from 7/14: report draft + delivery_drive_url legs still unverified from a real GUI run; consider pinning NodeODM image tag; M4E paperwork/calibration items on Adam (~7/21).
 
 ## Known Issues
-- **Tech debt (pre-existing, deferred from audit)**: drive_delivery flattens folders nested deeper than one level (upload targets `rel.parts[0]` only) — harmless while all deliverables are one level deep; fix before shipping nested tile sets
-- Map card on hover-heavy footage reads as GPS-noise scribble (acceptable; real shoots span the parcel)
-- VARI timeout is 3600s; very large orthos under QGIS python may need more
-- `sortie_settings.json` modified + `rtklib/` untracked — pre-existing local state, NOT from this session, left uncommitted deliberately
+- PPK fix rate is physics-limited by 30-s CORS base data — flight duration is the only lever. Sub-5-min captures should be treated as raw-GPS jobs.
+- NodeODM tasks auto-clean after 48h — recover assets fast after any failure.
 
 ## Key Decisions
-- GIS delivery policy per job type via `gis_delivery` preset flag; internal-vs-delivered via `_`-prefix folder convention; client report lists only actually-delivered files
-- Vegetation analysis preset-gated and graceful-skip everywhere — a missing QGIS install or any runtime GIS/VARI error never breaks a mission (hardened post-audit)
-- Reel map card: request-not-guarantee; per-clip polylines; PIL card style (Remotion replaces in Phase 4)
-- Audit M2 (Drive folder flattening) deferred as pre-existing debt rather than fixed
+- No same-day PPK is possible via noaa-cors-pds daily files; workflow = re-run PPK next day (RINEX stays with photos).
+- EXIF writes stay gated to fixed (Q=1) solutions only (float bias worse than raw GPS) — unchanged, now better messaged.
+- (Non-repo, same session): staff-meeting CMO seat now owns published-content analytics via Blotato (no new content-manager agent); new book project "Starting a Drone Business Using AI" briefed at `obsidian-dev/projects/drone-ai-book/`.
 
 ## Uncommitted Changes
-- `sortie_settings.json` (pre-existing, not mine), untracked `rtklib/`, and `.claude/` state files — everything from this session is committed and pushed (`38b9073`, `c51ce22`, `d376d1f`, `575413c`)
+- `.claude/` workflow files only; all code committed and pushed (dev = main = `3f38e8e`).

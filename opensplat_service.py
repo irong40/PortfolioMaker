@@ -43,6 +43,13 @@ OPENSPLAT_BIN = "/code/build/opensplat"
 CONTAINER_NAME = "opensplat"
 CONTAINER_WORK = "/work"
 
+# The NodeODM `outputs` override for splat tasks. REPLACES the default
+# all.zip whitelist — the archive contains only these (a few MB of poses).
+OPENSFM_OUTPUTS = [
+    "opensfm/reconstruction.json",
+    "opensfm/image_list.txt",
+]
+
 _STEP_RE = re.compile(r"Step\s+(\d+):\s*([\d.]+)")
 
 # Failure taxonomy — matcher only, NO auto-retry. Keyed by stderr/stdout

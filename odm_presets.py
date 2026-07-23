@@ -233,19 +233,37 @@ PRESETS = {
     },
 
     # ── Gaussian Splat ───────────────────────────────────────────────────
-    # Processed via MipMap Desktop, not NodeODM.
+    # NodeODM runs SfM for camera poses, then the self-built OpenSplat CUDA
+    # container trains the splat (opensplat_service). Replaced MipMap
+    # 2026-07-23 (free tier caps at 512 images; CLI needs a rotating
+    # per-GUI-session token — no headless path).
+    #
+    # CRITICAL (D12): NO split/split-overlap here — split-merge scatters
+    # opensfm/ under submodels/ and the pose files never land at the
+    # project root. Never add _SPLIT_MERGE or optimize-disk-space.
+    # The task is submitted with outputs=[the two opensfm paths] (see
+    # process_job), so its all.zip is a few MB of poses, not deliverables.
+    # dsm=false + skip-orthophoto verified E2E 2026-07-22 (task b038d432);
+    # skip-3dmodel added to save hours of unused mesh work on big sets —
+    # verified at Quailshire scale before production (Phase 4 gate).
     "gaussian_splat": {
         "label": "Gaussian Splat",
-        "description": "3D Gaussian Splat via MipMap Desktop",
+        "description": "3D Gaussian Splat via NodeODM SfM + OpenSplat (GPU)",
         "photo_filter": None,
-        "min_photos": 50,
-        "engine": "mipmap",
-        "odm_options": [],
-        "downloads": ["gs_ply", "gs_sog_tiles"],
+        "min_photos": 20,
+        "engine": "opensplat",
+        "odm_options": [
+            {"name": "dsm", "value": False},
+            {"name": "skip-orthophoto", "value": True},
+            {"name": "skip-3dmodel", "value": True},
+        ],
+        "downloads": ["gs_ply"],
         "report_type": "gaussian_splat",
-        "mipmap_settings": {
-            "resolution_level": 3,
-            "mesh_decimate_ratio": 0.5,
+        "opensplat_settings": {
+            # d>=2 is a hard floor on 12GB VRAM: d=1 at 20MP stalled the
+            # card at 11.7GB even with 23 photos (measured 2026-07-22).
+            "num_iters": 30000,
+            "downscale_factor": 2,
         },
     },
 }
@@ -312,6 +330,9 @@ def apply_platform_overrides(preset, platform):
     profile = PLATFORM_PROFILES[platform]
     overrides = profile.get("odm_overrides", [])
 
+    # mipmap never touches NodeODM, so ODM overrides are meaningless there.
+    # opensplat DOES run NodeODM SfM — platform overrides (gps-accuracy,
+    # rolling-shutter) improve its poses, so they intentionally apply.
     if not overrides or preset.get("engine") == "mipmap":
         return preset
 
