@@ -76,6 +76,27 @@ def save_settings(settings):
         json.dump(settings, f, indent=2)
 
 CRM_MANUAL_CHOICE = "Manual (no CRM link)"
+
+
+def scan_summary(classification, working_set, preset):
+    """One line describing what the selected job type will actually process.
+
+    Local (panorama) jobs consume the PANORAMA/ sets, which scan_photos prunes
+    out of the working set — reporting working_set.total for those claimed 0
+    photos while the run happily processed 26.
+    """
+    label = preset["label"]
+    if preset.get("engine") == "local":
+        sets = classification.panorama_sets if classification else []
+        photos = sum(ps.photo_count for ps in sets)
+        return (f"Using: {photos} photos in {len(sets)} panorama set(s) "
+                f"({label} preset)")
+
+    total = working_set.total if working_set else 0
+    photo_filter = preset["photo_filter"]
+    if photo_filter:
+        return f"Using: {total} {photo_filter} photos ({label} preset)"
+    return f"Using: {total} photos — all ({label} preset)"
 # ─── COLORS / STYLE ────────────────────────────────────────────────────────
 
 SENTINEL_PURPLE = "#5B2C6F"
@@ -1680,13 +1701,8 @@ class PortfolioMakerApp:
                 self.badge_platform.set((result.platform or "?").upper())
 
                 # Summary
-                photo_filter = preset["photo_filter"]
-                if photo_filter:
-                    self._summary_var.set(
-                        f"Using: {self._working_set.total} {photo_filter} photos ({preset['label']} preset)")
-                else:
-                    self._summary_var.set(
-                        f"Using: {self._working_set.total} photos — all ({preset['label']} preset)")
+                self._summary_var.set(scan_summary(result, self._working_set,
+                                                   preset))
 
                 site = self.site_name_var.get().strip() or "Unnamed"
                 custom_out = self.output_var.get().strip()

@@ -422,6 +422,16 @@ def scan_panoramas(source_dir, min_photos=PANORAMA_MIN_PHOTOS):
     return valid_sets
 
 
+def _platform_from_panoramas(panorama_sets):
+    """Detect the drone platform from panorama frames, for panorama-only cards."""
+    for panorama_set in panorama_sets:
+        for photo in panorama_set.photos:
+            platform, _ = get_platform(photo)
+            if platform:
+                return platform
+    return None
+
+
 def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
     """Read metadata and classify all photos in source_dir.
 
@@ -435,17 +445,28 @@ def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
     """
     log = logging.getLogger(__name__)
     photos = scan_photos(source_dir)
-
-    if not photos:
-        log.warning(f"No photos found in {source_dir}")
-        return ClassificationResult(source_dir=str(source_dir))
+    pano_sets, pano_stragglers = scan_panorama_sets(source_dir)
 
     result = ClassificationResult(
         source_dir=str(source_dir),
         total=len(photos),
         threshold=threshold,
         created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        panorama_sets=pano_sets,
+        panorama_stragglers=pano_stragglers,
+        panorama_count=len(pano_sets),
     )
+
+    if not photos:
+        # scan_photos prunes PANORAMA/ as an output dir, so a panorama-only
+        # card looks empty here while still holding deliverable sets. Bailing
+        # out made "point sortie at the flight folder" fail for those cards.
+        if not pano_sets and not pano_stragglers:
+            log.warning(f"No photos found in {source_dir}")
+        else:
+            log.info(f"No loose photos in {source_dir} — panorama-only capture")
+            result.platform = _platform_from_panoramas(pano_sets)
+        return result
 
     # Detect platform from first photo
     platform, _ = get_platform(str(photos[0]))
@@ -492,12 +513,6 @@ def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
     if pitches:
         result.pitch_min = min(pitches)
         result.pitch_max = max(pitches)
-
-    # Detect panorama sets
-    pano_sets, pano_stragglers = scan_panorama_sets(source_dir)
-    result.panorama_sets = pano_sets
-    result.panorama_stragglers = pano_stragglers
-    result.panorama_count = len(pano_sets)
 
     return result
 

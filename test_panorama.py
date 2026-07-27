@@ -129,6 +129,32 @@ class TestScanPanoramas:
         folder_names = [Path(s.folder).name for s in sets]
         assert folder_names == ["001", "002", "003"]
 
+    def test_panorama_only_card_scans_from_the_flight_folder(self, tmp_path):
+        """scan_photos prunes PANORAMA/, so classify_photos used to bail out
+        before panorama detection and report zero sets for a panorama-only
+        mission — the natural "point sortie at the flight folder" case."""
+        from photo_classifier import classify_photos
+
+        sub = tmp_path / "PANORAMA" / "100_0001"
+        sub.mkdir(parents=True)
+        for i in range(26):
+            (sub / f"DJI_{i:04d}.JPG").write_bytes(b"fake")
+
+        result = classify_photos(str(tmp_path))
+
+        assert result.total == 0
+        assert result.panorama_count == 1
+        assert result.panorama_sets[0].photo_count == 26
+
+    def test_empty_folder_still_reports_nothing(self, tmp_path):
+        from photo_classifier import classify_photos
+
+        result = classify_photos(str(tmp_path))
+
+        assert result.total == 0
+        assert result.panorama_count == 0
+        assert result.panorama_sets == []
+
     def test_folder_group_below_eight_is_a_straggler(self, tmp_path):
         sub = tmp_path / "PANORAMA" / "001"
         sub.mkdir(parents=True)
@@ -493,6 +519,36 @@ class TestPanoramaGuiContract:
         assert sortie.engine_requires_nodeodm("mipmap") is False
         assert sortie.engine_requires_nodeodm("opensplat") is True
         assert sortie.engine_requires_nodeodm("nodeodm") is True
+
+    def test_summary_counts_panorama_photos_not_the_pruned_working_set(self):
+        """The panorama preset filters nothing, so the old summary reported
+        loose-photo counts — 0 on a panorama-only card — beside a run that
+        processed every frame in PANORAMA/."""
+        import sortie
+        from odm_presets import get_preset
+
+        classification = ClassificationResult(source_dir="/card", total=3)
+        classification.panorama_sets = [PanoramaSet("001", 26),
+                                        PanoramaSet("002", 26)]
+        classification.panorama_count = 2
+
+        summary = sortie.scan_summary(
+            classification, classification, get_preset("panorama"))
+
+        assert "52 photos" in summary
+        assert "2 panorama set(s)" in summary
+
+    def test_summary_is_unchanged_for_nodeodm_job_types(self):
+        import sortie
+        from odm_presets import get_preset
+
+        classification = ClassificationResult(source_dir="/card", total=40)
+
+        summary = sortie.scan_summary(
+            classification, classification, get_preset("property_survey"))
+
+        assert "40" in summary
+        assert "panorama" not in summary.lower()
 
     def test_process_guard_reads_an_attribute_that_actually_exists(self):
         """`self._scan_result` was never assigned — the panorama min-photo
