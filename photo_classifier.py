@@ -15,6 +15,7 @@ Usage (CLI):
 """
 
 import os
+import re
 import sys
 import json
 import shutil
@@ -277,8 +278,6 @@ def find_prestitched_panoramas(source_dir):
 
 def match_prestitched_panoramas(panorama_sets, candidates, radius_m=5.0):
     """Associate pre-stitched candidates with panorama source sets."""
-    import re
-
     unmatched_sets = list(panorama_sets)
     unmatched_candidates = []
     for candidate in sorted(candidates, key=str.lower):
@@ -325,8 +324,12 @@ def scan_panorama_details(source_dir, min_photos=8):
     if pano_dir is None:
         return [], []
 
-    located = []
-    folder_groups = []
+    # A DJI PANORAMA subfolder is one capture. Cluster WITHIN a folder only —
+    # pooling every folder's photos merges panoramas shot from the same launch
+    # point (two altitudes over one spot sit well inside the 5 m radius) into a
+    # single unstitchable set. Clustering per folder still splits the rare
+    # folder that holds two distinct positions.
+    candidates = []
     for subfolder in sorted(pano_dir.iterdir()):
         if not subfolder.is_dir():
             continue
@@ -343,32 +346,38 @@ def scan_panorama_details(source_dir, min_photos=8):
             if gps and len(gps) >= 2 and gps[0] is not None and gps[1] is not None:
                 folder_located.append((str(photo), float(gps[1]), float(gps[0])))
 
-        if folder_located:
-            located.extend(folder_located)
-            located_paths = {item[0] for item in folder_located}
-            missing = [photo for photo in photos if str(photo) not in located_paths]
-            if missing:
-                folder_groups.append((subfolder, missing))
-        else:
-            folder_groups.append((subfolder, photos))
+        located_paths = {item[0] for item in folder_located}
+        missing = [str(photo) for photo in photos
+                   if str(photo) not in located_paths]
 
-    candidates = []
-    for cluster in cluster_panorama_photos(located):
-        paths = [item[0] for item in cluster]
-        candidates.append(PanoramaSet(
-            folder=str(Path(paths[0]).parent),
-            photo_count=len(paths),
-            photos=paths,
-            latitude=sum(item[1] for item in cluster) / len(cluster),
-            longitude=sum(item[2] for item in cluster) / len(cluster),
-        ))
+        if not folder_located:
+            candidates.append(PanoramaSet(
+                folder=str(subfolder),
+                photo_count=len(photos),
+                photos=[str(path) for path in photos],
+            ))
+            continue
 
-    for subfolder, photos in folder_groups:
-        candidates.append(PanoramaSet(
-            folder=str(subfolder),
-            photo_count=len(photos),
-            photos=[str(path) for path in photos],
-        ))
+        folder_sets = []
+        for cluster in cluster_panorama_photos(folder_located):
+            paths = [item[0] for item in cluster]
+            folder_sets.append(PanoramaSet(
+                folder=str(subfolder),
+                photo_count=len(paths),
+                photos=paths,
+                latitude=sum(item[1] for item in cluster) / len(cluster),
+                longitude=sum(item[2] for item in cluster) / len(cluster),
+            ))
+
+        # Photos in this folder with no GPS belong to the same capture. Attach
+        # them to the folder's largest set rather than emitting a second,
+        # duplicate set for the same folder.
+        if missing:
+            largest = max(folder_sets, key=lambda ps: ps.photo_count)
+            largest.photos = sorted(largest.photos + missing, key=str.lower)
+            largest.photo_count = len(largest.photos)
+
+        candidates.extend(folder_sets)
 
     def sort_key(panorama_set):
         return (
@@ -720,6 +729,23 @@ def _stitch_one_set(ps, output_path):
                 pass
 
 
+def gallery_prefix(output_dir, site_name=""):
+    """Return a per-job prefix for files copied into the shared gallery.
+
+    Panoramas are named set-NNN.jpg inside a job's own output folder, which is
+    unambiguous there but collides in PANO_GALLERY — every job would write
+    set-001.jpg over the last one. Job output dirs are named
+    <site>_<job_type>_<date>, so that name (or the site name) makes the gallery
+    copy unique per job.
+    """
+    folder = Path(output_dir)
+    name = folder.name
+    if name.lower() == "panoramas":  # nodeodm/mipmap jobs nest panoramas/
+        name = folder.parent.name
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", name or site_name or "").strip("-")
+    return slug or "job"
+
+
 def stitch_panoramas(panorama_sets, output_dir, progress_callback=None,
                      site_name=""):
     """Stitch each panorama set and save to output_dir.
@@ -731,11 +757,14 @@ def stitch_panoramas(panorama_sets, output_dir, progress_callback=None,
         panorama_sets: List of PanoramaSet objects
         output_dir: Folder to save stitched panoramas
         progress_callback: Optional callable(current, total, filename)
+        site_name: Optional site label used in viewer titles and as a
+            fallback for the shared-gallery filename prefix
     """
     log = logging.getLogger(__name__)
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    prefix = gallery_prefix(out, site_name)
 
     for i, ps in enumerate(panorama_sets):
         folder_name = Path(ps.folder).name
@@ -776,10 +805,11 @@ def stitch_panoramas(panorama_sets, output_dir, progress_callback=None,
 
         # Copy to central panorama gallery for DroneInvoice uploads
         pano_gallery = Path(os.environ.get("PANO_GALLERY", r"E:\Portfolio\_Panoramas"))
+        gallery_path = pano_gallery / f"{prefix}_{output_path.name}"
         try:
             pano_gallery.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(output_path), str(pano_gallery / output_path.name))
-            log.info(f"  Copied to gallery: {pano_gallery / output_path.name}")
+            shutil.copy2(str(output_path), str(gallery_path))
+            log.info(f"  Copied to gallery: {gallery_path}")
         except OSError as e:
             log.warning(f"  Gallery copy failed: {e}")
 

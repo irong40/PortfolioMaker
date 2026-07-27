@@ -306,7 +306,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             notify("report", "Generating panorama report")
             report_result = generate_report("panorama", report_data, output_dir)
         except ImportError:
-            log.warning("report_generator not available â€” skipping report")
+            log.warning("report_generator not available — skipping report")
 
         notify("complete", f"Output: {output_dir}")
         result = {
@@ -432,7 +432,8 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     if classification.panorama_sets:
         pano_dir = str(Path(output_dir) / "panoramas")
         notify("panorama", f"Stitching {len(classification.panorama_sets)} panorama(s)")
-        stitch_panoramas(classification.panorama_sets, pano_dir)
+        stitch_panoramas(classification.panorama_sets, pano_dir,
+                         site_name=site_name)
         stitched = [ps for ps in classification.panorama_sets if ps.stitched_path]
         failed = [ps for ps in classification.panorama_sets if ps.stitch_error]
         if stitched:
@@ -668,7 +669,8 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
     if classification.panorama_sets:
         pano_dir = str(Path(output_dir) / "panoramas")
         notify("panorama", f"Stitching {len(classification.panorama_sets)} panorama(s)")
-        stitch_panoramas(classification.panorama_sets, pano_dir)
+        stitch_panoramas(classification.panorama_sets, pano_dir,
+                         site_name=site_name)
         stitched = [ps for ps in classification.panorama_sets if ps.stitched_path]
         failed = [ps for ps in classification.panorama_sets if ps.stitch_error]
         if stitched:

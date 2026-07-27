@@ -13,6 +13,7 @@ from photo_classifier import (
     ClassificationResult,
     cluster_panorama_photos,
     find_prestitched_panoramas,
+    gallery_prefix,
     generate_panorama_viewer,
     match_prestitched_panoramas,
     scan_panoramas,
@@ -196,6 +197,103 @@ class TestClusterPanoramaPhotos:
 
         assert clusters[0][0][0].startswith("a_")
         assert clusters[1][0][0].startswith("z_")
+
+    def test_two_folders_at_one_launch_point_stay_separate(
+            self, tmp_path, monkeypatch):
+        """Two panoramas shot from the same spot must not merge into one set.
+
+        Clustering pooled across folders collapsed them (they sit ~1 m apart,
+        well inside the 5 m radius), producing an unstitchable 16-photo set.
+        """
+        gps = {}
+        for folder, latitude in (("001", 36.8500000), ("002", 36.8500100)):
+            sub = tmp_path / "PANORAMA" / folder
+            sub.mkdir(parents=True)
+            for path, lat, lon in self._located(folder, latitude, -76.2900):
+                photo = sub / Path(path).name
+                photo.write_bytes(b"fake")
+                gps[str(photo)] = [lon, lat, 10.0]
+        monkeypatch.setattr(
+            "photo_classifier.get_gps_data", lambda path: gps.get(path))
+
+        sets, stragglers = scan_panorama_details(str(tmp_path))
+
+        assert stragglers == []
+        assert [s.photo_count for s in sets] == [8, 8]
+        assert sorted(Path(s.folder).name for s in sets) == ["001", "002"]
+
+    def test_folder_splits_when_it_holds_two_distinct_positions(
+            self, tmp_path, monkeypatch):
+        sub = tmp_path / "PANORAMA" / "flight"
+        sub.mkdir(parents=True)
+        gps = {}
+        for path, lat, lon in (
+            self._located("near", 36.8500, -76.2900)
+            + self._located("far", 36.8510, -76.2900)
+        ):
+            photo = sub / Path(path).name
+            photo.write_bytes(b"fake")
+            gps[str(photo)] = [lon, lat, 10.0]
+        monkeypatch.setattr(
+            "photo_classifier.get_gps_data", lambda path: gps.get(path))
+
+        sets, _ = scan_panorama_details(str(tmp_path))
+
+        assert [s.photo_count for s in sets] == [8, 8]
+
+    def test_photos_without_gps_join_their_folders_set(
+            self, tmp_path, monkeypatch):
+        """A mixed-GPS folder is one capture, not two sets."""
+        sub = tmp_path / "PANORAMA" / "001"
+        sub.mkdir(parents=True)
+        gps = {}
+        for path, lat, lon in self._located("set1", 36.8500, -76.2900):
+            photo = sub / Path(path).name
+            photo.write_bytes(b"fake")
+            gps[str(photo)] = [lon, lat, 10.0]
+        for i in range(9):  # enough to clear min_photos on its own
+            (sub / f"nogps_{i:02d}.jpg").write_bytes(b"fake")
+        monkeypatch.setattr(
+            "photo_classifier.get_gps_data", lambda path: gps.get(path))
+
+        sets, stragglers = scan_panorama_details(str(tmp_path))
+
+        assert stragglers == []
+        assert len(sets) == 1
+        assert sets[0].photo_count == 17
+        assert sets[0].latitude is not None
+
+
+class TestGalleryNaming:
+    def test_prefix_uses_job_folder_name(self):
+        assert gallery_prefix(
+            Path(r"E:\Portfolio\Hemp Haven_panorama_2026-07-27")
+        ) == "Hemp-Haven-panorama-2026-07-27"
+
+    def test_prefix_climbs_out_of_nested_panoramas_dir(self):
+        assert gallery_prefix(
+            Path(r"E:\Portfolio\Hemp Haven_mapping_2026-07-27\panoramas")
+        ) == "Hemp-Haven-mapping-2026-07-27"
+
+    def test_two_jobs_do_not_overwrite_each_other_in_the_gallery(
+            self, tmp_path, monkeypatch):
+        """set-001.jpg from job B must not clobber job A's gallery copy."""
+        gallery = tmp_path / "gallery"
+        monkeypatch.setenv("PANO_GALLERY", str(gallery))
+        monkeypatch.setattr(
+            "photo_classifier._stitch_one_set",
+            lambda ps, output_path: (
+                Image.new("RGB", (32, 16)).save(output_path, "JPEG")
+                or {"ok": True, "width": 32, "height": 16}))
+
+        for job in ("siteA_panorama_2026-07-27", "siteB_panorama_2026-07-27"):
+            stitch_panoramas([PanoramaSet(folder="001", photo_count=8)],
+                             str(tmp_path / job))
+
+        assert sorted(p.name for p in gallery.iterdir()) == [
+            "siteA-panorama-2026-07-27_set-001.jpg",
+            "siteB-panorama-2026-07-27_set-001.jpg",
+        ]
 
 
 class TestPrestitchedPanoramas:

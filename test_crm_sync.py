@@ -108,6 +108,25 @@ def test_suggested_job_type_none_for_video():
     assert _parse_mission(row).suggested_job_type() is None
 
 
+def test_suggested_job_type_maps_panorama_preset():
+    """Every sortie job type needs a PRESET_TO_JOB_TYPE key or it silently
+    fails to prefill the CRM mission dropdown."""
+    row = dict(SAMPLE_ROW)
+    row["processing_templates"] = {"preset_name": "panorama", "path_code": None,
+                                   "display_name": "Panorama / 360"}
+    assert _parse_mission(row).suggested_job_type() == "panorama"
+
+
+def test_every_odm_job_type_is_reachable_from_a_crm_preset():
+    from odm_presets import JOB_TYPES
+    from crm_sync import PRESET_TO_JOB_TYPE
+
+    mapped = {v for v in PRESET_TO_JOB_TYPE.values() if v}
+    # gaussian_splat is an internal engine, never dispatched from a CRM preset.
+    unreachable = {code for code, _ in JOB_TYPES} - mapped - {"gaussian_splat"}
+    assert unreachable == set(), f"job types with no CRM preset: {unreachable}"
+
+
 def test_suggested_site_name_is_street():
     m = _parse_mission(SAMPLE_ROW)
     assert m.suggested_site_name() == "2237 Shillelagh Rd"

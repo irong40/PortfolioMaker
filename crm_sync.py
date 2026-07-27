@@ -44,6 +44,12 @@ PRESET_TO_JOB_TYPE = {
     "premium": "real_estate",
     "luxury": "real_estate",
     "commercial": "real_estate",
+    # Forward-looking: no processing_templates row carries these preset_names
+    # yet (verified 2026-07-27 against qjpujskwqaehxnqypxzu). Mapped anyway so
+    # the mission dropdown prefills the day the CRM rows are created —
+    # an unmapped preset_name is a silent no-prefill, not an error.
+    "panorama": "panorama",
+    "structures": "structures",
     "video": None,
     "wildlife_census_thermal": None,
 }
@@ -279,6 +285,14 @@ def mark_failed(job_id, error):
 # sortie report_type -> CRM report_templates.code. The CRM template is the
 # single source of truth for sections; sortie prefills job_reports.section_data
 # and the app renders/edits it. gaussian_splat has no client report template.
+#
+# panorama is intentionally absent: verified 2026-07-27 against
+# qjpujskwqaehxnqypxzu, report_templates has no panorama row, and adding one is
+# part of the staged (unapplied) deliverables migration
+# projects/sentinel-aerial/crm-sortie-deliverables-migration-2026-07-25.sql.
+# Until that lands, linked panorama runs still write status/output_path back via
+# mark_complete; only the report draft is skipped. Add "panorama": "<code>" here
+# the same day the CRM row is created.
 REPORT_TEMPLATE_CODES = {
     "construction_progress": "construction_progress",
     "property_survey": "property_survey",

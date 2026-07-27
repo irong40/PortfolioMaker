@@ -268,7 +268,7 @@ PRESETS = {
         },
     },
 
-    # â”€â”€ Panorama / 360 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Panorama / 360 ─────────────────────────────────────────────────────
     # Fully local: DJI pre-stitched fast path or the OpenCV worker. This
     # preset must never receive platform-specific ODM options.
     "panorama": {
