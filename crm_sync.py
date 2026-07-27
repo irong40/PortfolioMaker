@@ -50,6 +50,18 @@ PRESET_TO_JOB_TYPE = {
     # an unmapped preset_name is a silent no-prefill, not an error.
     "panorama": "panorama",
     "structures": "structures",
+    # Deliverables expansion (CRM migration 20260727141229, 5 new
+    # processing_templates rows). No dedicated ODM presets exist yet, so
+    # map to the nearest processing profile: survey_civil, mining and
+    # corridor/forestry all need the classified-DTM stack (DSM + DTM +
+    # LAS) that property_survey produces; scene_reconstruction needs the
+    # mixed oblique+nadir mesh stack from structures. Revisit if these
+    # verticals earn their own presets in odm_presets.py.
+    "survey_civil": "property_survey",
+    "mining_volumetrics": "property_survey",
+    "forestry_chm": "property_survey",
+    "corridor_mapping": "property_survey",
+    "scene_reconstruction": "structures",
     "video": None,
     "wildlife_census_thermal": None,
 }
