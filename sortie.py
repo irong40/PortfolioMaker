@@ -43,6 +43,7 @@ from drive_delivery import (
     deliver as drive_deliver,
 )
 from mission_planner import MissionPlannerDialog
+from video_stills import extract_cardinal_stills, has_yaw_telemetry
 import crm_sync
 from property_highlights import render_highlights, find_matching_kml
 
@@ -925,6 +926,12 @@ class PortfolioMakerApp:
             command=self._on_send_to_content_agent,
             style="Accent.TButton",
         ).pack(side="left")
+        self._cardinal_btn = ttk.Button(
+            btn_row, text="Extract Cardinal Stills",
+            command=self._on_extract_cardinal_stills,
+            style="Secondary.TButton",
+        )
+        self._cardinal_btn.pack(side="left", padx=(6, 0))
         self._video_queue_label = ttk.Label(
             btn_row, text="", font=(FONT_FAMILY, 8), foreground=TEXT_DIM)
         self._video_queue_label.pack(side="left", padx=(10, 0))
@@ -1010,6 +1017,87 @@ class PortfolioMakerApp:
         self._log(f"\nVideo manifest written: {manifest_path}")
         self._log(f"  {len(videos_to_send)} video(s) queued for content pipeline")
         self._log(f"  Open Claude Code and run /video-use with this manifest to edit + publish.")
+
+    def _on_extract_cardinal_stills(self):
+        """Pull N/E/S/W anchor frames from selected orbit videos via SRT yaw."""
+        if not self._found_videos:
+            return
+        selected = self._video_listbox.curselection()
+        if not selected:
+            messagebox.showwarning(
+                "Nothing selected",
+                "Select at least one video from the list.", parent=self.root)
+            return
+
+        jobs = []
+        for i in selected:
+            v = self._found_videos[i]
+            if not v.get("has_srt"):
+                self._log(f"Cardinal stills: {v['name']} skipped — no SRT sidecar")
+                continue
+            if not has_yaw_telemetry(v.get("srt_path")):
+                self._log(f"Cardinal stills: {v['name']} skipped — "
+                          "SRT has no gimbal yaw telemetry")
+                continue
+            jobs.append(v)
+        if not jobs:
+            messagebox.showinfo(
+                "No usable videos",
+                "None of the selected videos have SRT gimbal telemetry.\n"
+                "Cardinal stills need the .SRT sidecar recorded by the drone.",
+                parent=self.root)
+            return
+
+        # Front bearing only when the profile bearing selector is on screen —
+        # then labels become front/right/back/left instead of N/E/S/W.
+        front_bearing = None
+        try:
+            if self._bearing_frame.winfo_ismapped():
+                front_bearing = compass_to_bearing(self.bearing_var.get())
+        except (ValueError, AttributeError, tk.TclError):
+            front_bearing = None
+
+        out_base = (self.output_var.get().strip()
+                    or self.source_var.get().strip())
+        out_dir = str(Path(out_base) / "video_stills")
+        site = self.site_name_var.get().strip()
+
+        self._cardinal_btn.configure(state="disabled")
+        self._log(f"\nExtracting cardinal stills from {len(jobs)} video(s) "
+                  f"-> {out_dir}")
+        if front_bearing is not None:
+            self._log(f"  Front bearing {front_bearing:.0f} deg — "
+                      "labels front/right/back/left")
+
+        def work():
+            try:
+                for v in jobs:
+                    res = extract_cardinal_stills(
+                        v["path"], v["srt_path"], out_dir,
+                        front_bearing=front_bearing, site_name=site)
+
+                    def report(v=v, res=res):
+                        if res["error"]:
+                            self._log(f"  {v['name']}: FAILED — {res['error']}")
+                            return
+                        got = ", ".join(sorted(res["stills"]))
+                        self._log(
+                            f"  {v['name']}: {len(res['stills'])} still(s) [{got}]"
+                            f" — orbit coverage {res['coverage_deg']:.0f} deg")
+                        if res["missing"]:
+                            self._log(
+                                f"    missing: {', '.join(res['missing'])} — "
+                                "orbit never faced these directions")
+
+                    self.root.after(0, report)
+            except Exception as e:  # never leave the button dead
+                self.root.after(0, self._log,
+                                f"  Cardinal stills worker error: {e}")
+            finally:
+                self.root.after(
+                    0, lambda: self._cardinal_btn.configure(state="normal"))
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ── Build: Advanced (collapsed) ──
 
