@@ -76,6 +76,11 @@ def save_settings(settings):
 
 CRM_MANUAL_CHOICE = "Manual (no CRM link)"
 
+
+def engine_requires_nodeodm(engine):
+    """Return whether a processing engine needs the NodeODM service."""
+    return engine not in ("mipmap", "local")
+
 # ─── COLORS / STYLE ────────────────────────────────────────────────────────
 
 SENTINEL_PURPLE = "#5B2C6F"
@@ -1630,7 +1635,12 @@ class PortfolioMakerApp:
                     self._log(f"  Panoramas: {result.panorama_count} sets")
                     for ps in result.panorama_sets:
                         from pathlib import Path as _P
-                        self._log(f"    {_P(ps.folder).name}: {ps.photo_count} photos")
+                        source = "DJI pre-stitched" if ps.prestitched_path else "stitch required"
+                        self._log(
+                            f"    {_P(ps.folder).name}: {ps.photo_count} photos ({source})")
+                if result.panorama_stragglers:
+                    skipped = sum(ps.photo_count for ps in result.panorama_stragglers)
+                    self._log(f"  Panorama stragglers: {skipped} photos skipped")
                 if result.gps_bounds:
                     b = result.gps_bounds
                     lat_span = (b[1] - b[0]) * 111139
@@ -1690,7 +1700,7 @@ class PortfolioMakerApp:
                 "opensplat-status.md in the vault if the image needs a rebuild.")
             return
 
-        if engine != "mipmap" and not self._nodeodm_ok:
+        if engine_requires_nodeodm(engine) and not self._nodeodm_ok:
             messagebox.showerror("NodeODM Offline",
                 "NodeODM is not reachable. Start Docker or check the URL in Advanced settings.\n\n"
                 "Use 'Portfolio Only' to sort photos without processing.")
@@ -1698,7 +1708,10 @@ class PortfolioMakerApp:
 
         # Check minimum photo count
         min_photos = preset.get("min_photos", 20)
-        photo_count = self._working_set.total if self._working_set else 0
+        if engine == "local" and self._scan_result:
+            photo_count = sum(ps.photo_count for ps in self._scan_result.panorama_sets)
+        else:
+            photo_count = self._working_set.total if self._working_set else 0
         if photo_count < min_photos:
             if not messagebox.askyesno("Low Photo Count",
                     f"This job type ({preset['label']}) needs at least {min_photos} photos "

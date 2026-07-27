@@ -5,10 +5,11 @@ from report_templates import TEMPLATES, get_template, ReportTemplate, ReportSect
 
 
 class TestTemplateRegistry:
-    def test_all_seven_types_registered(self):
+    def test_all_eight_types_registered(self):
         expected = {
             "construction_progress", "property_survey", "roof_inspection",
             "structures", "vegetation", "real_estate", "gaussian_splat",
+            "panorama",
         }
         assert set(TEMPLATES.keys()) == expected
 
@@ -125,6 +126,14 @@ class TestTemplateUniqueness:
         assert "surface_condition" in keys
         assert "deformation" in keys
         assert "corrosion" in keys
+
+    def test_panorama_has_delivery_sections(self):
+        t = get_template("panorama")
+        keys = {s.key for s in t.sections}
+        assert "panorama_sets" in keys
+        assert "flight_summary" in keys
+        assert "deliverables" in keys
+        assert "methodology" in keys
 
     def test_oblique_heavy_for_inspections(self):
         """Roof and structural inspections should prefer oblique photos."""

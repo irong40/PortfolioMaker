@@ -10,6 +10,7 @@ class TestReportTypes:
         expected = {
             "construction_progress", "property_survey", "roof_inspection",
             "structures", "vegetation", "real_estate", "gaussian_splat",
+            "panorama",
         }
         assert set(REPORT_TYPES.keys()) == expected
 
@@ -136,14 +137,48 @@ class TestGenerateReport:
         assert os.path.exists(result["pdf_path"])
         assert "gaussian_splat" in result["pdf_path"]
 
-    def test_all_seven_types_produce_unique_pdfs(self, tmp_path):
+    def test_panorama_creates_pdf_with_set_statuses(self, tmp_path):
+        data = {
+            **SAMPLE_DATA,
+            "job_type": "panorama",
+            "engine": "local",
+            "panorama_stragglers": 3,
+            "panorama_sets": [
+                {
+                    "set": 1,
+                    "photo_count": 26,
+                    "latitude": 36.850001,
+                    "longitude": -76.290001,
+                    "source_type": "dji_prestitched",
+                    "status": "dji_prestitched",
+                    "viewer_status": "ready",
+                },
+                {
+                    "set": 2,
+                    "photo_count": 25,
+                    "latitude": None,
+                    "longitude": None,
+                    "source_type": "opencv_stitched",
+                    "status": "opencv_stitched",
+                    "viewer_status": "ready",
+                },
+            ],
+        }
+
+        result = generate_report("panorama", data, str(tmp_path))
+
+        assert result is not None
+        assert os.path.exists(result["pdf_path"])
+        assert "panorama" in result["pdf_path"]
+
+    def test_all_eight_types_produce_unique_pdfs(self, tmp_path):
         pdfs = []
         for report_type in REPORT_TYPES:
             data = {**SAMPLE_DATA, "job_type": report_type}
             result = generate_report(report_type, data, str(tmp_path))
             assert result is not None, f"{report_type} failed"
             pdfs.append(result["pdf_path"])
-        assert len(set(pdfs)) == 7
+        assert len(set(pdfs)) == 8
 
 
 @pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="reportlab not installed")
@@ -169,7 +204,7 @@ class TestAIEnhancedReport:
         assert result is not None
 
     def test_ai_report_all_types(self, tmp_path):
-        """All 7 types should work with AI analysis."""
+        """All report types should work with AI analysis."""
         for report_type in REPORT_TYPES:
             data = {**SAMPLE_DATA, "job_type": report_type,
                     "ai_analysis": SAMPLE_AI_ANALYSIS, "images": SAMPLE_IMAGES}

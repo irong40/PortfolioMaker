@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 
 from sentinel_core.metadata import extract_gps_from_exif, extract_xmp_gimbal
 from sentinel_core.platform import detect_platform_from_file
+from sentinel_core.spatial import haversine
 
 PIPELINE_AVAILABLE = True  # sentinel-core is always installed
 
@@ -74,6 +75,13 @@ class PanoramaSet:
     photos: list = field(default_factory=list)  # list of file paths
     stitched_path: str = ""  # set after stitching
     stitch_error: str = ""   # set if stitching fails
+    latitude: float = None
+    longitude: float = None
+    prestitched_path: str = ""
+    viewer_path: str = ""
+    viewer_error: str = ""
+    status: str = "pending"
+    source_type: str = "source_photos"
 
 
 @dataclass
@@ -102,6 +110,7 @@ class ClassificationResult:
     platform: str = None
     photos: list = field(default_factory=list)
     panorama_sets: list = field(default_factory=list)  # list of PanoramaSet
+    panorama_stragglers: list = field(default_factory=list)
     nadir_dir: str = ""
     oblique_dir: str = ""
     unknown_dir: str = ""
@@ -155,7 +164,7 @@ def scan_photos(source_dir):
     return sorted(photos)
 
 
-def scan_panoramas(source_dir):
+def _scan_panoramas_by_folder(source_dir):
     """Detect panorama sets in a PANORAMA/ subfolder.
 
     DJI drones store panorama source photos in:
@@ -192,6 +201,201 @@ def scan_panoramas(source_dir):
             ))
 
     return sets
+
+
+def cluster_panorama_photos(located_photos, radius_m=5.0):
+    """Group ``(path, latitude, longitude)`` records by GPS position.
+
+    Input and output ordering is deterministic. Each new photo is compared to
+    the running geographic centre of existing clusters using sentinel-core's
+    haversine helper.
+    """
+    clusters = []
+    for photo in sorted(located_photos, key=lambda item: str(item[0]).lower()):
+        path, latitude, longitude = photo
+        best = None
+        best_distance = None
+        for cluster in clusters:
+            centre_lat = sum(item[1] for item in cluster) / len(cluster)
+            centre_lon = sum(item[2] for item in cluster) / len(cluster)
+            distance = haversine(latitude, longitude, centre_lat, centre_lon)
+            if distance <= radius_m and (
+                    best_distance is None or distance < best_distance):
+                best = cluster
+                best_distance = distance
+        if best is None:
+            clusters.append([photo])
+        else:
+            best.append(photo)
+    return clusters
+
+
+def _find_panorama_root(source_dir):
+    """Return the DJI PANORAMA directory associated with ``source_dir``."""
+    source = Path(source_dir)
+    if source.is_dir() and source.name.lower() == "panorama":
+        return source
+    child = source / "PANORAMA"
+    if child.is_dir():
+        return child
+    sibling = source.parent / "PANORAMA"
+    if sibling.is_dir():
+        return sibling
+    return None
+
+
+def find_prestitched_panoramas(source_dir):
+    """Return likely DJI-generated equirectangular JPEGs."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return []
+
+    source = Path(source_dir)
+    roots = []
+    for root in (source, _find_panorama_root(source_dir)):
+        if root is not None and root.is_dir() and root not in roots:
+            roots.append(root)
+
+    candidates = []
+    for root in roots:
+        for path in sorted(root.iterdir()):
+            if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg"}:
+                continue
+            stem = path.stem.lower()
+            if "pano" not in stem and "panorama" not in stem:
+                continue
+            try:
+                with Image.open(path) as image:
+                    width, height = image.size
+            except OSError:
+                continue
+            if height > 0 and width / height >= 1.8:
+                candidates.append(str(path))
+    return sorted(set(candidates), key=str.lower)
+
+
+def match_prestitched_panoramas(panorama_sets, candidates, radius_m=5.0):
+    """Associate pre-stitched candidates with panorama source sets."""
+    import re
+
+    unmatched_sets = list(panorama_sets)
+    unmatched_candidates = []
+    for candidate in sorted(candidates, key=str.lower):
+        gps = get_gps_data(candidate)
+        if gps and len(gps) >= 2 and gps[0] is not None and gps[1] is not None:
+            longitude, latitude = float(gps[0]), float(gps[1])
+            nearby = []
+            for panorama_set in unmatched_sets:
+                if panorama_set.latitude is None or panorama_set.longitude is None:
+                    continue
+                distance = haversine(
+                    latitude, longitude,
+                    panorama_set.latitude, panorama_set.longitude,
+                )
+                if distance <= radius_m:
+                    nearby.append((distance, panorama_set))
+            if nearby:
+                _, matched = min(nearby, key=lambda item: item[0])
+                matched.prestitched_path = candidate
+                unmatched_sets.remove(matched)
+                continue
+        unmatched_candidates.append(candidate)
+
+    for candidate in unmatched_candidates:
+        candidate_ids = set(re.findall(r"\d{3,}", Path(candidate).stem))
+        matches = []
+        if candidate_ids:
+            for panorama_set in unmatched_sets:
+                set_ids = set(re.findall(r"\d{3,}", Path(panorama_set.folder).name))
+                if candidate_ids & set_ids:
+                    matches.append(panorama_set)
+        if len(matches) == 1:
+            matches[0].prestitched_path = candidate
+            unmatched_sets.remove(matches[0])
+        elif len(unmatched_sets) == 1 and len(unmatched_candidates) == 1:
+            unmatched_sets[0].prestitched_path = candidate
+            unmatched_sets.clear()
+    return panorama_sets
+
+
+def scan_panorama_details(source_dir, min_photos=8):
+    """Return ``(valid_sets, straggler_sets)`` for a panorama source."""
+    pano_dir = _find_panorama_root(source_dir)
+    if pano_dir is None:
+        return [], []
+
+    located = []
+    folder_groups = []
+    for subfolder in sorted(pano_dir.iterdir()):
+        if not subfolder.is_dir():
+            continue
+        photos = sorted(
+            f for f in subfolder.iterdir()
+            if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg"}
+        )
+        if not photos:
+            continue
+
+        folder_located = []
+        for photo in photos:
+            gps = get_gps_data(str(photo))
+            if gps and len(gps) >= 2 and gps[0] is not None and gps[1] is not None:
+                folder_located.append((str(photo), float(gps[1]), float(gps[0])))
+
+        if folder_located:
+            located.extend(folder_located)
+            located_paths = {item[0] for item in folder_located}
+            missing = [photo for photo in photos if str(photo) not in located_paths]
+            if missing:
+                folder_groups.append((subfolder, missing))
+        else:
+            folder_groups.append((subfolder, photos))
+
+    candidates = []
+    for cluster in cluster_panorama_photos(located):
+        paths = [item[0] for item in cluster]
+        candidates.append(PanoramaSet(
+            folder=str(Path(paths[0]).parent),
+            photo_count=len(paths),
+            photos=paths,
+            latitude=sum(item[1] for item in cluster) / len(cluster),
+            longitude=sum(item[2] for item in cluster) / len(cluster),
+        ))
+
+    for subfolder, photos in folder_groups:
+        candidates.append(PanoramaSet(
+            folder=str(subfolder),
+            photo_count=len(photos),
+            photos=[str(path) for path in photos],
+        ))
+
+    def sort_key(panorama_set):
+        return (
+            panorama_set.latitude is None,
+            panorama_set.latitude if panorama_set.latitude is not None else 0.0,
+            panorama_set.longitude if panorama_set.longitude is not None else 0.0,
+            panorama_set.photos[0].lower() if panorama_set.photos
+            else panorama_set.folder.lower(),
+        )
+
+    valid_sets = []
+    stragglers = []
+    for candidate in sorted(candidates, key=sort_key):
+        if candidate.photo_count >= min_photos:
+            valid_sets.append(candidate)
+        else:
+            candidate.status = "skipped_straggler"
+            stragglers.append(candidate)
+    match_prestitched_panoramas(
+        valid_sets, find_prestitched_panoramas(source_dir))
+    return valid_sets, stragglers
+
+
+def scan_panoramas(source_dir, min_photos=8):
+    """Return valid panorama sets from the selected DJI photo layout."""
+    valid_sets, _ = scan_panorama_details(source_dir, min_photos=min_photos)
+    return valid_sets
 
 
 def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
@@ -266,8 +470,9 @@ def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
         result.pitch_max = max(pitches)
 
     # Detect panorama sets
-    pano_sets = scan_panoramas(source_dir)
+    pano_sets, pano_stragglers = scan_panorama_details(source_dir)
     result.panorama_sets = pano_sets
+    result.panorama_stragglers = pano_stragglers
     result.panorama_count = len(pano_sets)
 
     return result
@@ -394,6 +599,76 @@ def sort_photos(result, copy=True, progress_callback=None):
 STITCH_TIMEOUT_SECONDS = 900
 
 _WORKER_PATH = Path(__file__).resolve().parent / "pano_stitch_worker.py"
+PANNELLUM_ASSETS_DIR = Path(__file__).resolve().parent / "assets" / "pannellum"
+
+
+def generate_panorama_viewer(panorama_path, output_dir=None, title=""):
+    """Generate an offline Pannellum viewer for one panorama image."""
+    panorama_path = Path(panorama_path)
+    output = Path(output_dir) if output_dir else panorama_path.parent
+    output.mkdir(parents=True, exist_ok=True)
+
+    target_panorama = output / panorama_path.name
+    if panorama_path.resolve() != target_panorama.resolve():
+        shutil.copy2(panorama_path, target_panorama)
+
+    assets_output = output / "assets"
+    assets_output.mkdir(parents=True, exist_ok=True)
+    for asset_name in ("pannellum.js", "pannellum.css", "LICENSE.txt"):
+        source_asset = PANNELLUM_ASSETS_DIR / asset_name
+        if not source_asset.is_file():
+            raise FileNotFoundError(f"Missing vendored Pannellum asset: {source_asset}")
+        shutil.copy2(source_asset, assets_output / asset_name)
+
+    config = json.dumps({
+        "type": "equirectangular",
+        "panorama": target_panorama.name,
+        "autoLoad": True,
+        "showFullscreenCtrl": True,
+        "title": title or target_panorama.stem,
+    }, indent=2, ensure_ascii=True)
+    config = (config.replace("<", "\\u003c")
+                    .replace(">", "\\u003e")
+                    .replace("&", "\\u0026"))
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Panorama Viewer</title>
+  <link rel="stylesheet" href="assets/pannellum.css">
+  <script src="assets/pannellum.js"></script>
+  <style>
+    html, body, #panorama {{ width: 100%; height: 100%; margin: 0; background: #111; }}
+  </style>
+</head>
+<body>
+  <div id="panorama"></div>
+  <script>
+    pannellum.viewer("panorama", {config});
+  </script>
+</body>
+</html>
+"""
+    viewer_path = output / f"{target_panorama.stem}.html"
+    viewer_path.write_text(html, encoding="utf-8", newline="\n")
+    return str(viewer_path)
+
+
+def write_panorama_launcher(output_dir, first_viewer, port=8765):
+    """Write the Windows helper that serves locally vendored viewer files."""
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    viewer_name = Path(first_viewer).name
+    content = (
+        "@echo off\n"
+        "cd /d \"%~dp0\"\n"
+        f"start \"\" \"http://127.0.0.1:{port}/{viewer_name}\"\n"
+        f"python -m http.server {port} --bind 127.0.0.1\n"
+    )
+    launcher_path = output / "view_panoramas.bat"
+    launcher_path.write_text(content, encoding="utf-8", newline="\r\n")
+    return str(launcher_path)
 
 
 def _stitch_one_set(ps, output_path):
@@ -445,7 +720,8 @@ def _stitch_one_set(ps, output_path):
                 pass
 
 
-def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
+def stitch_panoramas(panorama_sets, output_dir, progress_callback=None,
+                     site_name=""):
     """Stitch each panorama set and save to output_dir.
 
     Each set is stitched in its own subprocess (see _stitch_one_set) so
@@ -465,21 +741,38 @@ def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
         folder_name = Path(ps.folder).name
         log.info(f"Stitching panorama {i + 1}/{len(panorama_sets)}: {folder_name} ({ps.photo_count} photos)")
 
-        output_path = out / f"{folder_name}_panorama.jpg"
-        result = _stitch_one_set(ps, output_path)
+        output_path = out / f"set-{i + 1:03d}.jpg"
+        copied_prestitched = False
+        if ps.prestitched_path:
+            try:
+                shutil.copy2(ps.prestitched_path, output_path)
+                ps.stitched_path = str(output_path)
+                ps.status = "dji_prestitched"
+                ps.source_type = "dji_prestitched"
+                copied_prestitched = True
+                log.info(f"  Copied DJI panorama: {output_path.name}")
+            except (OSError, shutil.Error) as e:
+                log.warning(f"  DJI panorama copy failed, stitching sources: {e}")
 
-        if not result.get("ok"):
+        result = None
+        if not copied_prestitched:
+            result = _stitch_one_set(ps, output_path)
+
+        if result is not None and not result.get("ok"):
             ps.stitch_error = result.get("error", "unknown error")
+            ps.status = "failed"
             log.warning(f"  Failed {folder_name}: {ps.stitch_error}")
             if ps.stitch_error == "OpenCV not installed":
-                log.warning("OpenCV not installed — skipping panorama stitching")
-                for remaining in panorama_sets[i:]:
-                    remaining.stitch_error = "OpenCV not installed"
-                return
+                log.warning(
+                    "OpenCV not installed — continuing to check later sets "
+                    "for DJI pre-stitched panoramas")
             continue
 
-        ps.stitched_path = str(output_path)
-        log.info(f"  Saved: {output_path.name} ({result['width']}x{result['height']})")
+        if result is not None:
+            ps.stitched_path = str(output_path)
+            ps.status = "opencv_stitched"
+            ps.source_type = "opencv_stitched"
+            log.info(f"  Saved: {output_path.name} ({result['width']}x{result['height']})")
 
         # Copy to central panorama gallery for DroneInvoice uploads
         pano_gallery = Path(os.environ.get("PANO_GALLERY", r"E:\Portfolio\_Panoramas"))
@@ -490,8 +783,23 @@ def stitch_panoramas(panorama_sets, output_dir, progress_callback=None):
         except OSError as e:
             log.warning(f"  Gallery copy failed: {e}")
 
+        try:
+            title = f"{site_name} Panorama {i + 1}" if site_name else f"Panorama {i + 1}"
+            ps.viewer_path = generate_panorama_viewer(
+                output_path, output_dir=out, title=title)
+        except (OSError, ValueError) as e:
+            ps.viewer_error = str(e)
+            log.warning(f"  Viewer generation failed: {e}")
+
         if progress_callback:
             progress_callback(i + 1, len(panorama_sets), folder_name)
+
+    viewers = [ps.viewer_path for ps in panorama_sets if ps.viewer_path]
+    if viewers:
+        try:
+            write_panorama_launcher(out, Path(viewers[0]).name)
+        except OSError as e:
+            log.warning(f"  Panorama launcher generation failed: {e}")
 
 
     # ─── CLIENT PROFILE SYSTEM ─────────────────────────────────────────────────
@@ -999,6 +1307,8 @@ def write_manifest(result, output_path=None):
             "oblique": result.oblique_count,
             "unknown": result.unknown_count,
             "panoramas": result.panorama_count,
+            "panorama_straggler_photos": sum(
+                ps.photo_count for ps in result.panorama_stragglers),
         },
         "pitch_range": {
             "min": result.pitch_min,
@@ -1020,10 +1330,27 @@ def write_manifest(result, output_path=None):
             {
                 "folder": ps.folder,
                 "photo_count": ps.photo_count,
+                "latitude": ps.latitude,
+                "longitude": ps.longitude,
+                "prestitched_path": ps.prestitched_path,
                 "stitched_path": ps.stitched_path,
                 "stitch_error": ps.stitch_error,
+                "viewer_path": ps.viewer_path,
+                "viewer_error": ps.viewer_error,
+                "status": ps.status,
+                "source_type": ps.source_type,
             }
             for ps in result.panorama_sets
+        ],
+        "panorama_stragglers": [
+            {
+                "folder": ps.folder,
+                "photo_count": ps.photo_count,
+                "latitude": ps.latitude,
+                "longitude": ps.longitude,
+                "status": ps.status,
+            }
+            for ps in result.panorama_stragglers
         ],
         "photos": [
             {

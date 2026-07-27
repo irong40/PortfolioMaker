@@ -215,6 +215,10 @@ def _render_flight_summary(elements, styles, data):
         rows.append(["GPS Footprint", f"~{lat_span:.0f}m \u00d7 {lon_span:.0f}m"])
         rows.append(["Coordinates",
                       f"{gps[0]:.6f}, {gps[2]:.6f} to {gps[1]:.6f}, {gps[3]:.6f}"])
+    if data.get("panorama_sets") is not None:
+        rows.append(["Panorama Sets", str(len(data.get("panorama_sets", [])))])
+        rows.append(["Skipped Straggler Photos",
+                     str(data.get("panorama_stragglers", 0))])
 
     table = Table(rows, colWidths=[2 * inch, 4.5 * inch])
     table.setStyle(TableStyle([
@@ -260,6 +264,20 @@ def _render_deliverables(elements, styles, data):
 def _render_methodology(elements, styles, data, has_ai):
     elements.append(Paragraph("Methodology", styles["SectionHeader"]))
     engine = data.get("engine", "nodeodm")
+    if engine == "local":
+        elements.append(Paragraph(
+            "DJI panorama source photos were grouped by capture position using "
+            "a five-metre geographic radius. Existing DJI-stitched panoramas "
+            "were preserved when available. Remaining sets were stitched with "
+            "OpenCV, then packaged with locally hosted Pannellum viewer files.",
+            styles["SentinelBody"],
+        ))
+        elements.append(Paragraph(
+            "Panorama imagery is intended for visual documentation and portfolio "
+            "presentation. It is not a survey or measurement deliverable.",
+            styles["SmallGrey"],
+        ))
+        return
     if engine == "opensplat":
         proc = ("Camera positions were solved photogrammetrically with "
                 "OpenDroneMap via NodeODM, and the scene was trained with "
@@ -292,6 +310,50 @@ def _render_methodology(elements, styles, data, has_ai):
         "and professional survey equipment should be used.",
         styles["SmallGrey"],
     ))
+
+
+def _render_panorama_sets(elements, styles, data):
+    """Render panorama positions and processing status."""
+    panorama_sets = data.get("panorama_sets", [])
+    if not panorama_sets:
+        return
+
+    elements.append(Paragraph("Panorama Sets", styles["SectionHeader"]))
+    rows = [["Set", "Position", "Photos", "Source", "Status", "Viewer"]]
+    for item in panorama_sets:
+        latitude = item.get("latitude")
+        longitude = item.get("longitude")
+        position = (
+            f"{latitude:.6f}, {longitude:.6f}"
+            if latitude is not None and longitude is not None else "Not available"
+        )
+        rows.append([
+            str(item.get("set", "")),
+            position,
+            str(item.get("photo_count", 0)),
+            str(item.get("source_type", "unknown")).replace("_", " ").title(),
+            str(item.get("status", "unknown")).replace("_", " ").title(),
+            str(item.get("viewer_status", "not generated")).replace("_", " ").title(),
+        ])
+
+    table = Table(
+        rows,
+        colWidths=[0.35 * inch, 1.55 * inch, 0.55 * inch,
+                   1.25 * inch, 1.25 * inch, 1.1 * inch],
+        repeatRows=1,
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), SAI_ORANGE),
+        ("TEXTCOLOR", (0, 0), (-1, 0), white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, LIGHT_GREY),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(table)
+    elements.append(Spacer(1, 12))
 
 
 def _render_photo_grid(elements, styles, section, images):
@@ -695,6 +757,9 @@ def _render_section(elements, styles, section, data, ai_data, images, has_ai):
         return
     if key == "processing_details":
         _render_processing_details(elements, styles, data)
+        return
+    if key == "panorama_sets":
+        _render_panorama_sets(elements, styles, data)
         return
     if key == "volume_comparison":
         _render_volume_comparison(elements, styles, data, images)

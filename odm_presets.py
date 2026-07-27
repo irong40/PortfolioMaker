@@ -22,6 +22,7 @@ JOB_TYPES = [
     ("vegetation", "Vegetation / Land"),
     ("real_estate", "Real Estate / Marketing"),
     ("gaussian_splat", "Gaussian Splat"),
+    ("panorama", "Panorama / 360"),
 ]
 
 # ── Shared option blocks ────────────────────────────────────────────────────
@@ -266,6 +267,20 @@ PRESETS = {
             "downscale_factor": 2,
         },
     },
+
+    # â”€â”€ Panorama / 360 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Fully local: DJI pre-stitched fast path or the OpenCV worker. This
+    # preset must never receive platform-specific ODM options.
+    "panorama": {
+        "label": "Panorama / 360",
+        "description": "Local 360 panorama stitching and web viewer export",
+        "photo_filter": None,
+        "min_photos": 8,
+        "engine": "local",
+        "odm_options": [],
+        "downloads": [],
+        "report_type": "panorama",
+    },
 }
 
 
@@ -330,10 +345,11 @@ def apply_platform_overrides(preset, platform):
     profile = PLATFORM_PROFILES[platform]
     overrides = profile.get("odm_overrides", [])
 
-    # mipmap never touches NodeODM, so ODM overrides are meaningless there.
+    # mipmap and local engines never touch NodeODM, so ODM overrides are
+    # meaningless there.
     # opensplat DOES run NodeODM SfM — platform overrides (gps-accuracy,
     # rolling-shutter) improve its poses, so they intentionally apply.
-    if not overrides or preset.get("engine") == "mipmap":
+    if not overrides or preset.get("engine") in ("mipmap", "local"):
         return preset
 
     existing_names = {o["name"] for o in preset["odm_options"]}

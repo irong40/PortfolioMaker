@@ -758,6 +758,43 @@ GAUSSIAN_SPLAT = ReportTemplate(
 
 # ─── REGISTRY ─────────────────────────────────────────────────────────────
 
+PANORAMA = ReportTemplate(
+    report_type="panorama",
+    title="360 Panorama Delivery Report",
+    photo_strategy="balanced",
+    max_ai_photos=4,
+    ai_system_addendum=(
+        "You specialize in documenting aerial 360 panorama coverage and "
+        "viewer-ready visual deliverables."
+    ),
+    ai_prompt=(
+        "Summarize the location coverage and visual usefulness of these aerial "
+        "panorama source images. Note any obvious gaps or quality limitations."
+    ),
+    ai_schema={
+        "executive_summary": "str",
+        "observations": [{"finding": "str", "location": "str", "severity": "str"}],
+        "conditions": ["str"],
+        "recommendations": ["str"],
+    },
+    sections=[
+        ReportSection(
+            key="executive_summary",
+            title="Delivery Summary",
+            ai_field="executive_summary",
+            fallback_text=(
+                "This package contains equirectangular panorama images and "
+                "self-hosted interactive viewers for portfolio presentation."
+            ),
+        ),
+        ReportSection(key="flight_summary", title="Flight Summary"),
+        ReportSection(key="panorama_sets", title="Panorama Sets"),
+        ReportSection(key="deliverables", title="Deliverables"),
+        ReportSection(key="methodology", title="Methodology"),
+    ],
+)
+
+
 TEMPLATES = {
     "construction_progress": CONSTRUCTION_PROGRESS,
     "property_survey": PROPERTY_SURVEY,
@@ -766,6 +803,7 @@ TEMPLATES = {
     "vegetation": VEGETATION,
     "real_estate": REAL_ESTATE,
     "gaussian_splat": GAUSSIAN_SPLAT,
+    "panorama": PANORAMA,
 }
 
 

@@ -11,11 +11,12 @@ from portfolio_service import (
     scan_for_job,
     build_output_dir,
     write_site_info,
+    process_job,
     portfolio_only,
     PORTFOLIO_ROOT,
 )
 from odm_presets import get_preset
-from photo_classifier import PhotoMeta, ClassificationResult
+from photo_classifier import PhotoMeta, PanoramaSet, ClassificationResult
 
 
 def _make_result(tmp_path, photos):
@@ -194,3 +195,61 @@ class TestPortfolioOnly:
             result = portfolio_only(str(tmp_path), "real_estate", "TestSite")
 
         assert "error" in result
+
+
+class TestPanoramaJob:
+    def test_local_panorama_route_never_calls_nodeodm(self, tmp_path):
+        output = tmp_path / "portfolio"
+        panorama_set = PanoramaSet(
+            folder=str(tmp_path / "PANORAMA" / "001"),
+            photo_count=8,
+            photos=[str(tmp_path / f"PANO_{i:04d}.JPG") for i in range(8)],
+            latitude=36.85,
+            longitude=-76.29,
+        )
+        classification = ClassificationResult(
+            source_dir=str(tmp_path),
+            total=0,
+            panorama_count=1,
+            panorama_sets=[panorama_set],
+        )
+
+        def fake_stitch(sets, output_dir, progress_callback=None, site_name=""):
+            path = Path(output_dir)
+            path.mkdir(parents=True, exist_ok=True)
+            jpg = path / "set-001.jpg"
+            html = path / "set-001.html"
+            jpg.write_bytes(b"jpeg")
+            html.write_text("viewer", encoding="utf-8")
+            (path / "view_panoramas.bat").write_text("serve", encoding="utf-8")
+            sets[0].stitched_path = str(jpg)
+            sets[0].viewer_path = str(html)
+            sets[0].status = "opencv_stitched"
+            sets[0].source_type = "opencv_stitched"
+
+        with (
+            patch("portfolio_service.classify_photos", return_value=classification),
+            patch("portfolio_service.stitch_panoramas", side_effect=fake_stitch),
+            patch("portfolio_service.submit_to_nodeodm") as submit,
+            patch("report_generator.generate_report",
+                  return_value={"pdf_path": str(output / "report.pdf")}),
+        ):
+            result = process_job(
+                str(tmp_path), "panorama", "Test Site", output_dir=str(output))
+
+        submit.assert_not_called()
+        assert "error" not in result
+        assert result["preset"]["engine"] == "local"
+        assert result["task_uuid"] is None
+        assert result["report_data"]["panorama_sets"][0]["status"] == "opencv_stitched"
+        assert "set-001.jpg" in result["downloaded"]
+        assert "set-001.html" in result["downloaded"]
+
+    def test_panorama_job_requires_one_valid_eight_photo_set(self, tmp_path):
+        classification = ClassificationResult(
+            source_dir=str(tmp_path), total=10, panorama_sets=[])
+
+        with patch("portfolio_service.classify_photos", return_value=classification):
+            result = process_job(str(tmp_path), "panorama", "Test Site")
+
+        assert result["error"] == "No panorama set with at least 8 photos"

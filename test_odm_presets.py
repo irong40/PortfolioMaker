@@ -5,10 +5,11 @@ from odm_presets import PRESETS, get_preset, JOB_TYPES
 
 
 class TestPresets:
-    def test_all_seven_job_types_exist(self):
+    def test_all_eight_job_types_exist(self):
         expected = {
             "construction_progress", "property_survey", "roof_inspection",
             "structures", "vegetation", "real_estate", "gaussian_splat",
+            "panorama",
         }
         assert set(PRESETS.keys()) == expected
 
@@ -35,8 +36,8 @@ class TestPresets:
 
     def test_odm_options_include_split_merge(self):
         for name, preset in PRESETS.items():
-            if preset.get("engine") in ("mipmap", "opensplat"):
-                continue  # mipmap: no ODM at all; opensplat: split forbidden (below)
+            if preset.get("engine") in ("mipmap", "opensplat", "local"):
+                continue  # local / mipmap: no ODM; opensplat: split forbidden (below)
             option_names = {o["name"] for o in preset["odm_options"]}
             assert "split" in option_names, f"{name} missing split option"
             assert "split-overlap" in option_names, f"{name} missing split-overlap"
@@ -57,7 +58,7 @@ class TestPresets:
 
     def test_split_value_is_reasonable(self):
         for name, preset in PRESETS.items():
-            if preset.get("engine") in ("mipmap", "opensplat"):
+            if preset.get("engine") in ("mipmap", "opensplat", "local"):
                 continue
             split_opt = next(o for o in preset["odm_options"] if o["name"] == "split")
             assert 50 <= split_opt["value"] <= 500, (
@@ -67,12 +68,13 @@ class TestPresets:
     def test_downloads_are_lists(self):
         for name, preset in PRESETS.items():
             assert isinstance(preset["downloads"], list)
-            assert len(preset["downloads"]) > 0
+            if preset.get("engine") != "local":
+                assert len(preset["downloads"]) > 0
 
     def test_odm_presets_download_orthophoto(self):
         for name, preset in PRESETS.items():
             # splat engines produce a splat, not an orthophoto
-            if preset.get("engine") in ("mipmap", "opensplat"):
+            if preset.get("engine") in ("mipmap", "opensplat", "local"):
                 continue
             assert "orthophoto.tif" in preset["downloads"], f"{name} should download orthophoto"
 
@@ -109,6 +111,22 @@ class TestGaussianSplatPreset:
 
     def test_report_type(self):
         assert PRESETS["gaussian_splat"]["report_type"] == "gaussian_splat"
+
+
+class TestPanoramaPreset:
+    def test_panorama_in_job_types(self):
+        assert ("panorama", "Panorama / 360") in JOB_TYPES
+
+    def test_panorama_is_local_with_eight_photo_minimum(self):
+        preset = PRESETS["panorama"]
+        assert preset["engine"] == "local"
+        assert preset["min_photos"] == 8
+        assert preset["odm_options"] == []
+        assert preset["downloads"] == []
+        assert preset["report_type"] == "panorama"
+
+    def test_platform_overrides_do_not_add_odm_options(self):
+        assert get_preset("panorama", platform="mini4pro")["odm_options"] == []
 
 
 class TestGetPreset:
