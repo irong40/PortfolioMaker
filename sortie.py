@@ -1165,6 +1165,19 @@ class PortfolioMakerApp:
         self._mipmap_ok = check_mipmap()
         self.root.after(0, self._update_mipmap_indicator)
 
+    def _refresh_nodeodm_status(self):
+        """Synchronous NodeODM re-probe for decision points (e.g. Process).
+
+        The startup probe result goes stale because the stack parks between
+        jobs; call this before acting on self._nodeodm_ok. Updates the
+        indicator as a side effect.
+        """
+        url = self.nodeodm_url_var.get() if hasattr(self, 'nodeodm_url_var') else None
+        info = check_nodeodm(url)
+        self._nodeodm_ok = info is not None
+        self._update_nodeodm_indicator(info)
+        return self._nodeodm_ok
+
     # ── CRM mission link ──
 
     def _load_crm_missions_bg(self):
@@ -1674,10 +1687,22 @@ class PortfolioMakerApp:
             return
 
         if engine != "mipmap" and not self._nodeodm_ok:
-            messagebox.showerror("NodeODM Offline",
-                "NodeODM is not reachable. Start Docker or check the URL in Advanced settings.\n\n"
-                "Use 'Portfolio Only' to sort photos without processing.")
-            return
+            # The startup probe goes stale: the WSL/NodeODM stack is parked
+            # between jobs (on-demand since 2026-07-21), so a red dot here is
+            # the NORMAL state, and submit_to_nodeodm() already auto-boots the
+            # stack (recovery task + 150s wait) before submitting. Re-probe in
+            # case the stack came up after launch, then offer to proceed —
+            # refusing here made every mission start with a false error.
+            self._refresh_nodeodm_status()
+        if engine != "mipmap" and not self._nodeodm_ok:
+            if not messagebox.askyesno("NodeODM Parked",
+                    "NodeODM is not running — the WSL stack parks itself "
+                    "between jobs.\n\n"
+                    "It will be started automatically when processing begins; "
+                    "the first submit can take a few extra minutes while the "
+                    "stack boots.\n\n"
+                    "Start processing?"):
+                return
 
         # Check minimum photo count
         min_photos = preset.get("min_photos", 20)
