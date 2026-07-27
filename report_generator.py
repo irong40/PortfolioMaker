@@ -265,11 +265,13 @@ def _render_methodology(elements, styles, data, has_ai):
     elements.append(Paragraph("Methodology", styles["SectionHeader"]))
     engine = data.get("engine", "nodeodm")
     if engine == "local":
+        from photo_classifier import PANORAMA_CLUSTER_RADIUS_M
         elements.append(Paragraph(
-            "DJI panorama source photos were grouped by capture position using "
-            "a five-metre geographic radius. Existing DJI-stitched panoramas "
-            "were preserved when available. Remaining sets were stitched with "
-            "OpenCV, then packaged with locally hosted Pannellum viewer files.",
+            "DJI panorama source photos were grouped by capture position "
+            f"within each capture folder using a {PANORAMA_CLUSTER_RADIUS_M:g}-metre "
+            "geographic radius. Existing DJI-stitched panoramas were preserved "
+            "when available. Remaining sets were stitched with OpenCV, then "
+            "packaged with locally hosted Pannellum viewer files.",
             styles["SentinelBody"],
         ))
         elements.append(Paragraph(

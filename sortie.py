@@ -30,7 +30,7 @@ from photo_classifier import (
     list_profiles, load_profile, classify_with_profile, sort_with_profile,
     compass_to_bearing,
 )
-from odm_presets import JOB_TYPES, get_preset
+from odm_presets import JOB_TYPES, get_preset, engine_requires_nodeodm
 from portfolio_service import (
     check_nodeodm, scan_for_job, process_job, portfolio_only, PORTFOLIO_ROOT,
 )
@@ -76,12 +76,6 @@ def save_settings(settings):
         json.dump(settings, f, indent=2)
 
 CRM_MANUAL_CHOICE = "Manual (no CRM link)"
-
-
-def engine_requires_nodeodm(engine):
-    """Return whether a processing engine needs the NodeODM service."""
-    return engine not in ("mipmap", "local")
-
 # ─── COLORS / STYLE ────────────────────────────────────────────────────────
 
 SENTINEL_PURPLE = "#5B2C6F"
@@ -1796,8 +1790,9 @@ class PortfolioMakerApp:
 
         # Check minimum photo count
         min_photos = preset.get("min_photos", 20)
-        if engine == "local" and self._scan_result:
-            photo_count = sum(ps.photo_count for ps in self._scan_result.panorama_sets)
+        if engine == "local" and self._classification:
+            photo_count = sum(
+                ps.photo_count for ps in self._classification.panorama_sets)
         else:
             photo_count = self._working_set.total if self._working_set else 0
         if photo_count < min_photos:

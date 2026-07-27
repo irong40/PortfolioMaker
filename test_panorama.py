@@ -13,11 +13,11 @@ from photo_classifier import (
     ClassificationResult,
     cluster_panorama_photos,
     find_prestitched_panoramas,
-    gallery_prefix,
+    gallery_filename_prefix,
     generate_panorama_viewer,
-    match_prestitched_panoramas,
+    attach_prestitched_panoramas,
     scan_panoramas,
-    scan_panorama_details,
+    scan_panorama_sets,
     stitch_panoramas,
     write_panorama_launcher,
 )
@@ -135,7 +135,7 @@ class TestScanPanoramas:
         for i in range(7):
             (sub / f"PANO_{i:04d}.JPG").write_bytes(b"fake")
 
-        sets, stragglers = scan_panorama_details(str(tmp_path))
+        sets, stragglers = scan_panorama_sets(str(tmp_path))
 
         assert sets == []
         assert len(stragglers) == 1
@@ -182,7 +182,7 @@ class TestClusterPanoramaPhotos:
         monkeypatch.setattr(
             "photo_classifier.get_gps_data", lambda path: gps.get(path))
 
-        sets, stragglers = scan_panorama_details(str(tmp_path))
+        sets, stragglers = scan_panorama_sets(str(tmp_path))
 
         assert len(sets) == 1
         assert sets[0].photo_count == 8
@@ -216,7 +216,7 @@ class TestClusterPanoramaPhotos:
         monkeypatch.setattr(
             "photo_classifier.get_gps_data", lambda path: gps.get(path))
 
-        sets, stragglers = scan_panorama_details(str(tmp_path))
+        sets, stragglers = scan_panorama_sets(str(tmp_path))
 
         assert stragglers == []
         assert [s.photo_count for s in sets] == [8, 8]
@@ -237,7 +237,7 @@ class TestClusterPanoramaPhotos:
         monkeypatch.setattr(
             "photo_classifier.get_gps_data", lambda path: gps.get(path))
 
-        sets, _ = scan_panorama_details(str(tmp_path))
+        sets, _ = scan_panorama_sets(str(tmp_path))
 
         assert [s.photo_count for s in sets] == [8, 8]
 
@@ -256,7 +256,7 @@ class TestClusterPanoramaPhotos:
         monkeypatch.setattr(
             "photo_classifier.get_gps_data", lambda path: gps.get(path))
 
-        sets, stragglers = scan_panorama_details(str(tmp_path))
+        sets, stragglers = scan_panorama_sets(str(tmp_path))
 
         assert stragglers == []
         assert len(sets) == 1
@@ -266,12 +266,12 @@ class TestClusterPanoramaPhotos:
 
 class TestGalleryNaming:
     def test_prefix_uses_job_folder_name(self):
-        assert gallery_prefix(
+        assert gallery_filename_prefix(
             Path(r"E:\Portfolio\Hemp Haven_panorama_2026-07-27")
         ) == "Hemp-Haven-panorama-2026-07-27"
 
     def test_prefix_climbs_out_of_nested_panoramas_dir(self):
-        assert gallery_prefix(
+        assert gallery_filename_prefix(
             Path(r"E:\Portfolio\Hemp Haven_mapping_2026-07-27\panoramas")
         ) == "Hemp-Haven-mapping-2026-07-27"
 
@@ -331,7 +331,7 @@ class TestPrestitchedPanoramas:
             PanoramaSet("set2", 8, latitude=36.8501, longitude=-76.2900),
         ]
 
-        match_prestitched_panoramas(sets, [str(second), str(first)])
+        attach_prestitched_panoramas(sets, [str(second), str(first)])
 
         assert sets[0].prestitched_path == str(first)
         assert sets[1].prestitched_path == str(second)
@@ -455,6 +455,34 @@ class TestPanoramaViewer:
         assert Path(panorama_set.viewer_path).exists()
         assert (tmp_path / "output" / "view_panoramas.bat").exists()
 
+    def test_launcher_reports_missing_python_instead_of_a_dead_port(
+            self, tmp_path):
+        """The .bat ships to clients, who usually have no Python installed."""
+        viewer = tmp_path / "set-001.html"
+        viewer.write_text("viewer", encoding="utf-8")
+
+        content = Path(
+            write_panorama_launcher(tmp_path, viewer)
+        ).read_text(encoding="utf-8")
+
+        assert "where python" in content
+        assert "errorlevel 1" in content
+        assert "python.org" in content
+
+    def test_progress_advances_past_a_failed_set(self, tmp_path, monkeypatch):
+        """A stalled progress bar reads as a hung job, so failures must tick."""
+        monkeypatch.setenv("PANO_GALLERY", str(tmp_path / "gallery"))
+        sets = [PanoramaSet("set1", 8), PanoramaSet("set2", 8)]
+        seen = []
+
+        with patch("photo_classifier._stitch_one_set",
+                   return_value={"ok": False, "error": "not enough overlap"}):
+            stitch_panoramas(sets, str(tmp_path / "output"),
+                             progress_callback=lambda i, total, name: seen.append((i, total)))
+
+        assert seen == [(1, 2), (2, 2)]
+        assert all(ps.status == "failed" for ps in sets)
+
 
 class TestPanoramaGuiContract:
     def test_job_type_is_exposed_and_local_engine_skips_nodeodm(self):
@@ -465,6 +493,17 @@ class TestPanoramaGuiContract:
         assert sortie.engine_requires_nodeodm("mipmap") is False
         assert sortie.engine_requires_nodeodm("opensplat") is True
         assert sortie.engine_requires_nodeodm("nodeodm") is True
+
+    def test_process_guard_reads_an_attribute_that_actually_exists(self):
+        """`self._scan_result` was never assigned — the panorama min-photo
+        guard raised AttributeError on every Process click. Tk makes the
+        handler hard to drive headlessly, so guard the name at the source."""
+        import inspect
+        import sortie
+
+        source = inspect.getsource(sortie)
+        assert "_scan_result" not in source
+        assert "self._classification = None" in source
 
 
 # ─── ClassificationResult panorama fields ──────────────────────────────────

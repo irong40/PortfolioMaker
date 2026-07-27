@@ -58,6 +58,97 @@ def scan_for_job(classification_result, preset):
     return classification_result
 
 
+def _panorama_report_rows(panorama_sets):
+    """One report row per panorama set, numbered as delivered (set-001...)."""
+    return [
+        {
+            "set": index,
+            "photo_count": ps.photo_count,
+            "latitude": ps.latitude,
+            "longitude": ps.longitude,
+            "source_type": ps.source_type,
+            "status": ps.status,
+            "stitched_path": ps.stitched_path,
+            "viewer_path": ps.viewer_path,
+            "viewer_status": ("ready" if ps.viewer_path
+                              else ps.viewer_error or "not_generated"),
+        }
+        for index, ps in enumerate(panorama_sets, 1)
+    ]
+
+
+def _panorama_deliverables(panorama_sets, output_dir):
+    """Map deliverable filename -> path for the finished panorama package."""
+    deliverables = {}
+    for ps in panorama_sets:
+        for path_value in (ps.stitched_path, ps.viewer_path):
+            if path_value:
+                path = Path(path_value)
+                deliverables[path.name] = str(path)
+    launcher = Path(output_dir) / "view_panoramas.bat"
+    if launcher.is_file():
+        deliverables[launcher.name] = str(launcher)
+    return deliverables
+
+
+def _process_panorama_job(classification, preset, output_dir, site_name,
+                          job_type, date_str, notify):
+    """Run the fully local panorama path: stitch, package viewers, report.
+
+    Never contacts NodeODM, so the result carries task_uuid=None.
+    """
+    panorama_sets = classification.panorama_sets
+    notify("panorama", f"Processing {len(panorama_sets)} panorama set(s)")
+    stitch_panoramas(panorama_sets, output_dir, site_name=site_name)
+    classification.panorama_dir = str(output_dir)
+
+    downloaded = _panorama_deliverables(panorama_sets, output_dir)
+    write_manifest(classification, Path(output_dir) / "manifest.json")
+
+    report_data = {
+        "site_name": site_name,
+        "date": date_str,
+        "job_type": job_type,
+        "total_photos": sum(ps.photo_count for ps in panorama_sets),
+        "nadir_count": 0,
+        "oblique_count": 0,
+        "platform": classification.platform,
+        "gps_bounds": classification.gps_bounds,
+        "downloads": downloaded,
+        "engine": preset.get("engine", "local"),
+        "photos": classification.photos,
+        "ai_analysis": None,
+        "images": None,
+        "panorama_sets": _panorama_report_rows(panorama_sets),
+        "panorama_stragglers": sum(
+            ps.photo_count for ps in classification.panorama_stragglers),
+    }
+
+    report_result = None
+    try:
+        from report_generator import generate_report
+        notify("report", "Generating panorama report")
+        report_result = generate_report("panorama", report_data, output_dir)
+    except ImportError:
+        log.warning("report_generator not available — skipping report")
+
+    notify("complete", f"Output: {output_dir}")
+    result = {
+        "output_dir": output_dir,
+        "classification": classification,
+        "working_set": classification,
+        "downloaded": downloaded,
+        "task_uuid": None,
+        "preset": preset,
+        "date": date_str,
+        "report": report_result,
+        "report_data": report_data,
+    }
+    if report_result is None:
+        result["warning"] = "Report generation failed"
+    return result
+
+
 def build_output_dir(site_name, date_str=None, job_type=None):
     """Build the output directory path for a portfolio job.
 
@@ -251,78 +342,9 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     downloaded = {}
 
     if engine == "local":
-        notify("panorama", f"Processing {len(classification.panorama_sets)} panorama set(s)")
-        stitch_panoramas(
-            classification.panorama_sets, output_dir, site_name=site_name)
-        classification.panorama_dir = str(output_dir)
-
-        for panorama_set in classification.panorama_sets:
-            for path_value in (panorama_set.stitched_path, panorama_set.viewer_path):
-                if path_value:
-                    path = Path(path_value)
-                    downloaded[path.name] = str(path)
-        launcher = Path(output_dir) / "view_panoramas.bat"
-        if launcher.is_file():
-            downloaded[launcher.name] = str(launcher)
-
-        write_manifest(classification, Path(output_dir) / "manifest.json")
-        panorama_rows = []
-        for index, panorama_set in enumerate(classification.panorama_sets, 1):
-            panorama_rows.append({
-                "set": index,
-                "photo_count": panorama_set.photo_count,
-                "latitude": panorama_set.latitude,
-                "longitude": panorama_set.longitude,
-                "source_type": panorama_set.source_type,
-                "status": panorama_set.status,
-                "stitched_path": panorama_set.stitched_path,
-                "viewer_path": panorama_set.viewer_path,
-                "viewer_status": (
-                    "ready" if panorama_set.viewer_path
-                    else panorama_set.viewer_error or "not_generated"),
-            })
-
-        report_data = {
-            "site_name": site_name,
-            "date": date_str,
-            "job_type": job_type,
-            "total_photos": sum(ps.photo_count for ps in classification.panorama_sets),
-            "nadir_count": 0,
-            "oblique_count": 0,
-            "platform": classification.platform,
-            "gps_bounds": classification.gps_bounds,
-            "downloads": downloaded,
-            "engine": engine,
-            "photos": classification.photos,
-            "ai_analysis": None,
-            "images": None,
-            "panorama_sets": panorama_rows,
-            "panorama_stragglers": sum(
-                ps.photo_count for ps in classification.panorama_stragglers),
-        }
-        report_result = None
-        try:
-            from report_generator import generate_report
-            notify("report", "Generating panorama report")
-            report_result = generate_report("panorama", report_data, output_dir)
-        except ImportError:
-            log.warning("report_generator not available — skipping report")
-
-        notify("complete", f"Output: {output_dir}")
-        result = {
-            "output_dir": output_dir,
-            "classification": classification,
-            "working_set": working_set,
-            "downloaded": downloaded,
-            "task_uuid": None,
-            "preset": preset,
-            "date": date_str,
-            "report": report_result,
-            "report_data": report_data,
-        }
-        if report_result is None:
-            result["warning"] = "Report generation failed"
-        return result
+        return _process_panorama_job(
+            classification, preset, output_dir, site_name, job_type,
+            date_str, notify)
 
     if engine == "mipmap":
         # MipMap pipeline — export filtered photos to staging dir

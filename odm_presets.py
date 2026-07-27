@@ -25,6 +25,15 @@ JOB_TYPES = [
     ("panorama", "Panorama / 360"),
 ]
 
+# Engines that run entirely on this machine. Every other engine value means
+# "submit to NodeODM", so this is the one place the distinction lives.
+LOCAL_ENGINES = ("mipmap", "local")
+
+
+def engine_requires_nodeodm(engine):
+    """Return whether a processing engine needs the NodeODM service."""
+    return engine not in LOCAL_ENGINES
+
 # ── Shared option blocks ────────────────────────────────────────────────────
 
 # Split-merge: keeps each submodel's memory footprint bounded.
@@ -345,11 +354,10 @@ def apply_platform_overrides(preset, platform):
     profile = PLATFORM_PROFILES[platform]
     overrides = profile.get("odm_overrides", [])
 
-    # mipmap and local engines never touch NodeODM, so ODM overrides are
-    # meaningless there.
+    # Local engines never touch NodeODM, so ODM overrides are meaningless.
     # opensplat DOES run NodeODM SfM — platform overrides (gps-accuracy,
     # rolling-shutter) improve its poses, so they intentionally apply.
-    if not overrides or preset.get("engine") in ("mipmap", "local"):
+    if not overrides or preset.get("engine") in LOCAL_ENGINES:
         return preset
 
     existing_names = {o["name"] for o in preset["odm_options"]}
