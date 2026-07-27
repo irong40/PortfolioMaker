@@ -19,6 +19,8 @@ from pathlib import Path
 
 import requests
 
+import odm_presets
+
 log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 10
@@ -46,10 +48,20 @@ PRESET_TO_JOB_TYPE = {
     "commercial": "real_estate",
     # Forward-looking: no processing_templates row carries these preset_names
     # yet (verified 2026-07-27 against qjpujskwqaehxnqypxzu). Mapped anyway so
-    # the mission dropdown prefills the day the CRM rows are created —
-    # an unmapped preset_name is a silent no-prefill, not an error.
+    # the mission dropdown prefills the day the CRM rows are created.
+    #
+    # A preset_name that exists in the CRM but is missing from this dict is a
+    # SILENT no-prefill, not an error: suggested_job_type() is a plain .get(),
+    # so the GUI just leaves the job-type radio on whatever was selected last
+    # and the operator processes the mission under the wrong preset without
+    # ever seeing a warning. That is the failure class this block exists to
+    # prevent, so the map is kept ahead of the CRM rather than behind it.
     "panorama": "panorama",
     "structures": "structures",
+    # gaussian_splat is a first-class GUI job type (odm_presets.JOB_TYPES),
+    # not an internal-only engine — it becomes CRM-dispatchable the moment an
+    # active processing_templates row with preset_name='gaussian_splat' lands.
+    "gaussian_splat": "gaussian_splat",
     # Deliverables expansion (CRM migration 20260727141229, 5 new
     # processing_templates rows). No dedicated ODM presets exist yet, so
     # map to the nearest processing profile: survey_civil, mining and
@@ -296,15 +308,23 @@ def mark_failed(job_id, error):
 
 # sortie report_type -> CRM report_templates.code. The CRM template is the
 # single source of truth for sections; sortie prefills job_reports.section_data
-# and the app renders/edits it. gaussian_splat has no client report template.
+# and the app renders/edits it.
 #
-# panorama is intentionally absent: verified 2026-07-27 against
-# qjpujskwqaehxnqypxzu, report_templates has no panorama row, and adding one is
-# part of the staged (unapplied) deliverables migration
-# projects/sentinel-aerial/crm-sortie-deliverables-migration-2026-07-25.sql.
-# Until that lands, linked panorama runs still write status/output_path back via
-# mark_complete; only the report draft is skipped. Add "panorama": "<code>" here
-# the same day the CRM row is created.
+# gaussian_splat and panorama are both still absent, re-verified 2026-07-27:
+# report_templates has no splat row and no panorama row. The deliverables
+# migration that used to be staged as
+# projects/sentinel-aerial/crm-sortie-deliverables-migration-2026-07-25.sql
+# has since been APPLIED (as 20260727141229) and added eight codes —
+# land_survey_civil, mining_aggregates, environmental_forestry,
+# utilities_corridor, public_safety_scene, insurance_claim, pavement_pci,
+# cemetery_survey — none of them a splat or panorama template, so neither gap
+# closed with it.
+#
+# Missing here is a soft skip, not a failure: push_report logs and returns
+# None, mark_complete still writes status/output_path/deliverables back, and
+# the local PDF is still produced independently by report_generator. Add
+# "gaussian_splat": "<code>" / "panorama": "<code>" the same day the CRM rows
+# are created.
 REPORT_TEMPLATE_CODES = {
     "construction_progress": "construction_progress",
     "property_survey": "property_survey",
@@ -318,6 +338,37 @@ PLATFORM_NAMES = {
     "mini4pro": "DJI Mini 4 Pro",
     "m4e": "DJI Matrice 4E",
     "m3e": "DJI Mavic 3E",
+}
+
+# Processing engine (odm_presets PRESETS[*]["engine"]) -> the extra software
+# it earns credit for in the methodology section, BEYOND NodeODM. Whether
+# NodeODM itself ran is not restated here; it is derived from
+# odm_presets.engine_requires_nodeodm() so the two files cannot disagree.
+#
+# That derivation is forward-looking, NOT a fix for a report that shipped
+# wrong. The old code tested `engine == "nodeodm"` for the NodeODM line, so an
+# opensplat run — which does run NodeODM for SfM before training locally —
+# would report "Sortie" alone. No such report was ever produced: push_report
+# returns early when REPORT_TEMPLATE_CODES has no entry for the job type, and
+# it has none for gaussian_splat (the only job type that yields
+# engine == "opensplat"), so build_report_payload has never been reached with
+# a non-nodeodm engine. Every engine that reaches it today is "nodeodm", for
+# which the old test and engine_requires_nodeodm() emit identical output.
+# This activates the day a gaussian_splat report_templates row plus a
+# REPORT_TEMPLATE_CODES entry exist — not before.
+#
+# "nodeodm" and "local" map to [] deliberately (nothing to add beyond the
+# derived line / nothing at all). MipMap survives only because
+# mipmap_service.py is retained as the rollback fallback; OpenSplat replaced
+# it as the splat engine 2026-07-23 and no preset yields engine == "mipmap"
+# today. test_every_odm_engine_has_a_software_credit locks this dict to
+# odm_presets, so adding an engine there fails the suite instead of quietly
+# dropping its attribution from client-facing reports.
+ENGINE_SOFTWARE = {
+    "nodeodm": [],
+    "local": [],
+    "opensplat": ["OpenSplat (3D Gaussian Splatting, GPU)"],
+    "mipmap": ["MipMap (3D Gaussian Splatting)"],
 }
 
 MAX_REPORT_IMAGES = 12
@@ -472,11 +523,11 @@ def build_report_payload(mission, result, template_name):
         "key_metrics": metrics,
     }
 
+    engine = rd.get("engine") or ""
     software = ["Sortie (Sentinel processing pipeline)"]
-    if rd.get("engine") == "nodeodm":
+    if engine and odm_presets.engine_requires_nodeodm(engine):
         software.append("NodeODM / OpenDroneMap")
-    if rd.get("engine") == "mipmap":
-        software.append("MipMap (gaussian splat)")
+    software.extend(ENGINE_SOFTWARE.get(engine, []))
     if veg:
         software.append("QGIS (VARI vegetation index)")
     section_data["methodology"] = {

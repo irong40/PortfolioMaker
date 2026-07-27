@@ -117,13 +117,22 @@ def test_suggested_job_type_maps_panorama_preset():
     assert _parse_mission(row).suggested_job_type() == "panorama"
 
 
+def test_suggested_job_type_maps_gaussian_splat_preset():
+    """gaussian_splat is a GUI job type like any other — an unmapped
+    preset_name would silently fail to prefill, not error."""
+    row = dict(SAMPLE_ROW)
+    row["processing_templates"] = {"preset_name": "gaussian_splat",
+                                   "path_code": None,
+                                   "display_name": "Gaussian Splat"}
+    assert _parse_mission(row).suggested_job_type() == "gaussian_splat"
+
+
 def test_every_odm_job_type_is_reachable_from_a_crm_preset():
     from odm_presets import JOB_TYPES
     from crm_sync import PRESET_TO_JOB_TYPE
 
     mapped = {v for v in PRESET_TO_JOB_TYPE.values() if v}
-    # gaussian_splat is an internal engine, never dispatched from a CRM preset.
-    unreachable = {code for code, _ in JOB_TYPES} - mapped - {"gaussian_splat"}
+    unreachable = {code for code, _ in JOB_TYPES} - mapped
     assert unreachable == set(), f"job types with no CRM preset: {unreachable}"
 
 
@@ -328,6 +337,83 @@ def test_build_report_payload_volumetrics(tmp_path):
     assert section_data["change_detection"]["comparison_date"] == "2026-06-01"
     assert "detection_heatmap" not in section_data
 
+
+# ── methodology software credits ────────────────────────────────────────────
+
+def test_every_odm_engine_has_a_software_credit():
+    """Adding an engine to odm_presets without an ENGINE_SOFTWARE entry drops
+    its attribution from client-facing reports silently — fail here instead."""
+    from odm_presets import PRESETS
+    from crm_sync import ENGINE_SOFTWARE
+
+    # portfolio_service resolves it as preset.get("engine", "nodeodm").
+    engines = {p.get("engine", "nodeodm") for p in PRESETS.values()}
+    missing = engines - set(ENGINE_SOFTWARE)
+    assert missing == set(), f"engines with no software credit: {missing}"
+
+
+def test_build_report_payload_credits_nodeodm(tmp_path):
+    result = _veg_result(tmp_path)          # engine == "nodeodm"
+    section_data, _, _ = crm_sync.build_report_payload(
+        _mission(), result, "Vegetation Analysis Report")
+    assert section_data["methodology"]["software"] == [
+        "Sortie (Sentinel processing pipeline)",
+        "NodeODM / OpenDroneMap",
+        "QGIS (VARI vegetation index)",
+    ]
+
+
+def test_build_report_payload_credits_opensplat_and_nodeodm(tmp_path):
+    """OpenSplat runs NodeODM for SfM before training locally, so a splat run
+    earns BOTH lines. The old `engine == "nodeodm"` test matched neither and
+    would have left the methodology section claiming Sortie alone.
+
+    Note this path is not reachable in production yet: push_report bails before
+    build_report_payload because REPORT_TEMPLATE_CODES has no gaussian_splat
+    entry. The test pins the behaviour for the day that row lands."""
+    result = _veg_result(tmp_path)
+    rd = result["report_data"]
+    rd["job_type"] = "gaussian_splat"
+    rd["engine"] = "opensplat"
+    rd["veg_results"] = {}
+    section_data, _, _ = crm_sync.build_report_payload(
+        _mission(), result, "Gaussian Splat Report")
+    software = section_data["methodology"]["software"]
+    assert software == [
+        "Sortie (Sentinel processing pipeline)",
+        "NodeODM / OpenDroneMap",
+        "OpenSplat (3D Gaussian Splatting, GPU)",
+    ]
+    assert not any("MipMap" in s for s in software)
+
+
+def test_build_report_payload_local_engine_claims_no_nodeodm(tmp_path):
+    """panorama is engine == "local" — it must not claim NodeODM."""
+    result = _veg_result(tmp_path)
+    rd = result["report_data"]
+    rd["job_type"] = "panorama"
+    rd["engine"] = "local"
+    rd["veg_results"] = {}
+    section_data, _, _ = crm_sync.build_report_payload(
+        _mission(), result, "Panorama Report")
+    assert section_data["methodology"]["software"] == [
+        "Sortie (Sentinel processing pipeline)"]
+
+
+def test_build_report_payload_unknown_engine_still_credits_nodeodm(tmp_path):
+    """An engine with no ENGINE_SOFTWARE entry loses only its own line, never
+    the derived NodeODM one."""
+    result = _veg_result(tmp_path)
+    rd = result["report_data"]
+    rd["engine"] = "some_future_engine"
+    rd["veg_results"] = {}
+    software = crm_sync.build_report_payload(
+        _mission(), result, "Report")[0]["methodology"]["software"]
+    assert software == ["Sortie (Sentinel processing pipeline)",
+                        "NodeODM / OpenDroneMap"]
+
+
+# ── report push ─────────────────────────────────────────────────────────────
 
 def test_push_report_end_to_end(configured, monkeypatch, tmp_path):
     result = _veg_result(tmp_path)
