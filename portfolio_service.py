@@ -114,8 +114,13 @@ def _nodeodm_recovery():
 
 def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
                        base_url=None, poll_interval=30, max_hours=6,
-                       progress_callback=None, cancel_event=None):
+                       progress_callback=None, cancel_event=None,
+                       on_submitted=None):
     """Submit photos to NodeODM and poll until complete.
+
+    on_submitted: optional callable(task_uuid) fired as soon as the task is
+        accepted, BEFORE the multi-hour poll — lets callers persist the task
+        handle so a crash mid-poll leaves a reattachable id, not an orphan.
 
     Returns:
         (task_uuid, task_info) on success, (None, error_msg) on failure.
@@ -133,6 +138,13 @@ def submit_to_nodeodm(photo_paths, odm_options, task_name="portfolio",
     task_uuid = submit_task(url, photo_paths, options=odm_options, name=task_name)
     if not task_uuid:
         return None, "Task submission failed"
+
+    if on_submitted:
+        try:
+            on_submitted(task_uuid)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "on_submitted hook failed for task %s", task_uuid, exc_info=True)
 
     info = poll_task(url, task_uuid, poll_interval=poll_interval,
                      max_hours=max_hours, progress_callback=progress_callback,
@@ -269,6 +281,7 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
         task_uuid, result = submit_to_nodeodm(
             photo_paths, preset["odm_options"], task_name=task_name, base_url=base_url,
             progress_callback=on_nodeodm_progress, cancel_event=cancel_event,
+            on_submitted=lambda uuid: notify("task_submitted", uuid),
         )
 
         if task_uuid is None:

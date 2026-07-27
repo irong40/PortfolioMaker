@@ -1735,6 +1735,12 @@ class PortfolioMakerApp:
         def run():
             try:
                 def progress_cb(stage, detail):
+                    if stage == "task_submitted" and crm_job:
+                        # Persist the task handle immediately — a crash during
+                        # the multi-hour poll then leaves a reattachable id
+                        if crm_sync.record_task_id(crm_job.id, detail):
+                            msg_queue.put(("stage", "crm",
+                                           f"task id {str(detail)[:8]} → CRM"))
                     msg_queue.put(("stage", stage, detail))
 
                 if crm_job:
