@@ -37,7 +37,19 @@ PRESET_TO_JOB_TYPE = {
     "construction": "construction_progress",
     "hybrid_bc": "construction_progress",
     "adiat": "roof_inspection",
+    # Post-cleanup names for the two other adiat-family rows (migration
+    # renames them so preset_name can go UNIQUE) — map ahead of the CRM
+    "adiat_roof": "roof_inspection",
+    "adiat_insurance": "roof_inspection",
     "thermal_inspection": "roof_inspection",
+    # 2026-07-27 deliverable templates (mirrors feat/opensplat d4e5af7 so
+    # the eventual merge is a clean dedupe — rows are LIVE in the CRM now)
+    "survey_civil": "property_survey",
+    "mining_volumetrics": "property_survey",
+    "forestry_chm": "property_survey",
+    "corridor_mapping": "property_survey",
+    "scene_reconstruction": "structures",
+    "gaussian_splat": "gaussian_splat",
     "re_basic": "real_estate",
     "re_pro": "real_estate",
     "re_standard": "real_estate",
@@ -258,6 +270,16 @@ def update_mission(job_id, fields, timeout=REQUEST_TIMEOUT):
 
 
 # ─── Stage helpers (called from the GUI worker thread) ─────────────────────
+
+def record_task_id(job_id, task_uuid):
+    """Persist the NodeODM task handle as soon as submission succeeds.
+
+    Written separately from mark_processing (which fires BEFORE submit, when
+    no task id exists yet) so a sortie crash mid-poll leaves a reattachable
+    id on the CRM row instead of an orphaned server-side task.
+    """
+    return update_mission(job_id, {"nodeodm_task_id": str(task_uuid)})
+
 
 def mark_processing(job_id, photo_count=None):
     fields = {
