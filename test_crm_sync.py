@@ -418,9 +418,11 @@ def test_build_report_payload_unknown_engine_still_credits_nodeodm(tmp_path):
 def test_push_report_end_to_end(configured, monkeypatch, tmp_path):
     result = _veg_result(tmp_path)
     posts = []
+    template_lookups = []
 
     def fake_get(url, headers=None, params=None, timeout=None):
         assert "report_templates" in url
+        template_lookups.append(params)
         return FakeResponse([{"id": "tpl-1", "name": "Vegetation Analysis Report",
                               "sections_manifest": []}])
 
@@ -435,6 +437,10 @@ def test_push_report_end_to_end(configured, monkeypatch, tmp_path):
 
     report_id = crm_sync.push_report(_mission(), result)
     assert report_id == "rep-1"
+
+    # Mission is property_type 'land' but job_type is vegetation — the land
+    # override only applies to property_survey, so the wire code is unchanged.
+    assert template_lookups[0]["code"] == "eq.vegetation_analysis"
 
     report_post = next(p for p in posts if "job_reports" in p["url"])
     assert report_post["json"]["job_id"] == SAMPLE_ROW["id"]
@@ -451,6 +457,97 @@ def test_push_report_end_to_end(configured, monkeypatch, tmp_path):
     assert all(r["image_url"].startswith(
         "https://example.supabase.co/storage/v1/object/public/media/report-images/rep-1/")
         for r in rows)
+
+
+# ── land-listing template selection ─────────────────────────────────────────
+
+def test_resolve_template_land_survey_gets_listing_package():
+    # Vacant-land spec missions (SAI-SPEC-*) sell a listing package, not a
+    # survey report.
+    assert crm_sync.resolve_report_template_code(
+        "property_survey", "land") == "land_listing_aerial"
+
+
+def test_resolve_template_land_is_case_and_space_tolerant():
+    assert crm_sync.resolve_report_template_code(
+        "property_survey", " Land ") == "land_listing_aerial"
+
+
+def test_resolve_template_survey_other_property_types_unchanged():
+    for ptype in ("residential", "commercial", "", None):
+        assert crm_sync.resolve_report_template_code(
+            "property_survey", ptype) == "property_survey"
+
+
+def test_resolve_template_land_does_not_hijack_other_job_types():
+    assert crm_sync.resolve_report_template_code(
+        "vegetation", "land") == "vegetation_analysis"
+    assert crm_sync.resolve_report_template_code(
+        "roof_inspection", "land") == "roof_property_inspection"
+    # Unmapped job types stay unmapped even on land parcels.
+    assert crm_sync.resolve_report_template_code(
+        "gaussian_splat", "land") is None
+
+
+def test_push_report_land_survey_requests_land_listing_template(
+        configured, monkeypatch, tmp_path):
+    """SAI-SPEC-style run: property_survey job on a 'land' mission must fetch
+    (and link) the land_listing_aerial CRM template, not property_survey."""
+    result = _veg_result(tmp_path)
+    result["report_data"]["job_type"] = "property_survey"
+    posts = []
+    template_lookups = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        assert "report_templates" in url
+        template_lookups.append(params)
+        return FakeResponse([{"id": "tpl-land", "name": "Land Listing Aerial Package",
+                              "sections_manifest": []}])
+
+    def fake_post(url, headers=None, params=None, json=None, data=None, timeout=None):
+        posts.append({"url": url, "json": json})
+        if "job_reports" in url:
+            return FakeResponse([{"id": "rep-land-1"}])
+        return FakeResponse()
+
+    monkeypatch.setattr(crm_sync.requests, "get", fake_get)
+    monkeypatch.setattr(crm_sync.requests, "post", fake_post)
+
+    report_id = crm_sync.push_report(_mission(), result)  # SAMPLE_ROW is 'land'
+    assert report_id == "rep-land-1"
+
+    # The overridden code is what actually goes over the wire.
+    assert template_lookups[0]["code"] == "eq.land_listing_aerial"
+
+    report_post = next(p for p in posts if "job_reports" in p["url"])
+    assert report_post["json"]["template_id"] == "tpl-land"
+    assert report_post["json"]["title"].startswith("Land Listing Aerial Package")
+
+
+def test_push_report_land_survey_non_land_keeps_survey_template(
+        configured, monkeypatch, tmp_path):
+    """Same property_survey run on a non-land mission stays on property_survey."""
+    result = _veg_result(tmp_path)
+    result["report_data"]["job_type"] = "property_survey"
+    row = dict(SAMPLE_ROW)
+    row["property_type"] = "residential"
+    template_lookups = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        template_lookups.append(params)
+        return FakeResponse([{"id": "tpl-ps", "name": "Property Survey Report",
+                              "sections_manifest": []}])
+
+    def fake_post(url, headers=None, params=None, json=None, data=None, timeout=None):
+        if "job_reports" in url:
+            return FakeResponse([{"id": "rep-ps-1"}])
+        return FakeResponse()
+
+    monkeypatch.setattr(crm_sync.requests, "get", fake_get)
+    monkeypatch.setattr(crm_sync.requests, "post", fake_post)
+
+    assert crm_sync.push_report(_parse_mission(row), result) == "rep-ps-1"
+    assert template_lookups[0]["code"] == "eq.property_survey"
 
 
 def test_push_report_skips_unmapped_job_type(configured, tmp_path):

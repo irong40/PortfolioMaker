@@ -356,6 +356,23 @@ REPORT_TEMPLATE_CODES = {
     "real_estate": "re_aerial_photography",
 }
 
+
+def resolve_report_template_code(job_type, property_type):
+    """CRM report_templates.code for this run, or None when no template applies.
+
+    Normally a straight REPORT_TEMPLATE_CODES lookup, with one property-type
+    override: vacant-land spec missions (drone_jobs.property_type = 'land',
+    e.g. SAI-SPEC-001..012) fly the same 'mapping' preset as any property
+    survey, but the client is buying a LISTING PACKAGE, not a survey report —
+    so property_survey + property_type 'land' resolves to the CRM's
+    'land_listing_aerial' template instead. The job_type itself stays
+    'property_survey' everywhere else (findings, payload sections), and every
+    other job_type/property_type combination is unchanged.
+    """
+    if job_type == "property_survey" and (property_type or "").strip().lower() == "land":
+        return "land_listing_aerial"
+    return REPORT_TEMPLATE_CODES.get(job_type)
+
 PLATFORM_NAMES = {
     "mini4pro": "DJI Mini 4 Pro",
     "m4e": "DJI Matrice 4E",
@@ -669,7 +686,7 @@ def push_report(mission, result, timeout=REQUEST_TIMEOUT):
         return None
 
     job_type = (result.get("report_data") or {}).get("job_type", "")
-    code = REPORT_TEMPLATE_CODES.get(job_type)
+    code = resolve_report_template_code(job_type, mission.property_type)
     if not code:
         log.info("No CRM report template for job type %s — skipping push", job_type)
         return None
