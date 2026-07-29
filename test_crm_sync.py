@@ -349,9 +349,51 @@ def test_push_report_end_to_end(configured, monkeypatch, tmp_path):
     rows = image_rows_post["json"]
     assert len(rows) == 3
     assert all(r["report_id"] == "rep-1" for r in rows)
-    assert all(r["image_url"].startswith(
-        "https://example.supabase.co/storage/v1/object/public/media/report-images/rep-1/")
-        for r in rows)
+    # Privatization contract: bucket-relative object paths, not public URLs.
+    assert all(r["image_url"].startswith("rep-1/") for r in rows)
+
+
+def test_report_image_rows_store_object_paths_not_urls(
+        configured, monkeypatch, tmp_path):
+    """Privatization contract: the stored image value has no scheme, host, or
+    bucket prefix, and round-trips the exact object path that was uploaded
+    (everything after 'report-images/')."""
+    result = _veg_result(tmp_path)
+    posts = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        return FakeResponse([{"id": "tpl-1", "name": "Vegetation Analysis Report",
+                              "sections_manifest": []}])
+
+    def fake_post(url, headers=None, params=None, json=None, data=None, timeout=None):
+        posts.append({"url": url, "json": json})
+        if "job_reports" in url:
+            return FakeResponse([{"id": "rep-1"}])
+        return FakeResponse()
+
+    monkeypatch.setattr(crm_sync.requests, "get", fake_get)
+    monkeypatch.setattr(crm_sync.requests, "post", fake_post)
+
+    assert crm_sync.push_report(_mission(), result) == "rep-1"
+
+    uploaded_paths = [
+        p["url"].split("/storage/v1/object/media/report-images/", 1)[1]
+        for p in posts
+        if "/storage/v1/object/media/report-images/" in p["url"]
+    ]
+    assert uploaded_paths  # sanity: uploads happened
+
+    rows = next(p for p in posts if "report_images" in p["url"])["json"]
+    stored = [r["image_url"] for r in rows]
+
+    for value in stored:
+        assert not value.startswith("http")          # no scheme
+        assert "supabase.co" not in value             # no host
+        assert not value.startswith("report-images/")  # no bucket prefix
+        assert value.startswith("rep-1/")
+
+    # Round-trips the exact uploaded object path, in order.
+    assert stored == uploaded_paths
 
 
 # ── land-listing template selection ─────────────────────────────────────────

@@ -579,10 +579,10 @@ def build_report_payload(mission, result, template_name):
 
 
 def _upload_report_image(report_id, local_path, timeout=30):
-    """Upload one image to the public media bucket; return its public URL."""
+    """Upload one image to storage; return its report-images object path."""
     url, key = _credentials()
     name = os.path.basename(str(local_path))
-    object_path = f"report-images/{report_id}/{name}"
+    object_path = f"{report_id}/{name}"
     content_type = "image/png" if name.lower().endswith(".png") else "image/jpeg"
     with open(local_path, "rb") as f:
         data = f.read()
@@ -592,10 +592,16 @@ def _upload_report_image(report_id, local_path, timeout=30):
         "Content-Type": content_type,
         "x-upsert": "true",
     }
-    resp = requests.post(f"{url}/storage/v1/object/media/{object_path}",
+    resp = requests.post(f"{url}/storage/v1/object/media/report-images/{object_path}",
                          headers=headers, data=data, timeout=timeout)
     resp.raise_for_status()
-    return f"{url}/storage/v1/object/public/media/{object_path}"
+    # CONTRACT (report-images privatization, step 1 of 3): stored image values
+    # that start with "http" are legacy public URLs; values without a scheme
+    # are report-images object paths (everything after "report-images/", e.g.
+    # "DJ-2026-0006/vari_heatmap.png" — no scheme, no host, no bucket prefix).
+    # crm_sync emits ONLY the path form from now on; the frontend resolves
+    # paths to signed URLs.
+    return object_path
 
 
 def push_report(mission, result, timeout=REQUEST_TIMEOUT):
@@ -643,11 +649,13 @@ def push_report(mission, result, timeout=REQUEST_TIMEOUT):
             if not os.path.exists(str(local_path)):
                 continue
             try:
-                public_url = _upload_report_image(report_id, local_path)
+                # Object path only (see contract in _upload_report_image) —
+                # never a public URL.
+                object_path = _upload_report_image(report_id, local_path)
                 image_rows.append({
                     "report_id": report_id,
                     "section_key": section_key,
-                    "image_url": public_url,
+                    "image_url": object_path,
                     "caption": caption,
                     "sort_order": sort_order,
                 })
