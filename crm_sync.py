@@ -592,15 +592,16 @@ def _upload_report_image(report_id, local_path, timeout=30):
         "Content-Type": content_type,
         "x-upsert": "true",
     }
-    resp = requests.post(f"{url}/storage/v1/object/media/report-images/{object_path}",
+    resp = requests.post(f"{url}/storage/v1/object/report-images/{object_path}",
                          headers=headers, data=data, timeout=timeout)
     resp.raise_for_status()
     # CONTRACT (report-images privatization, step 1 of 3): stored image values
-    # that start with "http" are legacy public URLs; values without a scheme
-    # are report-images object paths (everything after "report-images/", e.g.
+    # that start with "http" are legacy public URLs pointing at the public
+    # `media` bucket and keep working as-is; values without a scheme are
+    # object paths in the PRIVATE `report-images` bucket (e.g.
     # "DJ-2026-0006/vari_heatmap.png" — no scheme, no host, no bucket prefix).
-    # crm_sync emits ONLY the path form from now on; the frontend resolves
-    # paths to signed URLs.
+    # crm_sync uploads to and emits ONLY the private-bucket path form from now
+    # on; the frontend resolves paths to signed URLs against report-images.
     return object_path
 
 

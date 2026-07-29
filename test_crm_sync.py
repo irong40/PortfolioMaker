@@ -342,8 +342,12 @@ def test_push_report_end_to_end(configured, monkeypatch, tmp_path):
     assert report_post["json"]["template_id"] == "tpl-1"
     assert report_post["json"]["status"] == "draft"
 
-    storage_posts = [p for p in posts if "/storage/v1/object/media/" in p["url"]]
+    # Uploads go to the PRIVATE report-images bucket (not the public media
+    # bucket) — service-role uploads bypass RLS.
+    storage_posts = [p for p in posts
+                     if "/storage/v1/object/report-images/" in p["url"]]
     assert len(storage_posts) == 3  # heatmap + ortho preview + photo thumb
+    assert not any("/storage/v1/object/media/" in p["url"] for p in posts)
 
     image_rows_post = next(p for p in posts if "report_images" in p["url"])
     rows = image_rows_post["json"]
@@ -377,9 +381,9 @@ def test_report_image_rows_store_object_paths_not_urls(
     assert crm_sync.push_report(_mission(), result) == "rep-1"
 
     uploaded_paths = [
-        p["url"].split("/storage/v1/object/media/report-images/", 1)[1]
+        p["url"].split("/storage/v1/object/report-images/", 1)[1]
         for p in posts
-        if "/storage/v1/object/media/report-images/" in p["url"]
+        if "/storage/v1/object/report-images/" in p["url"]
     ]
     assert uploaded_paths  # sanity: uploads happened
 
