@@ -17,7 +17,7 @@ from photo_classifier import (
     classify_photos, filter_photos, export_photos, write_manifest,
     stitch_panoramas,
 )
-from odm_presets import get_preset
+from odm_presets import get_preset, delivers_gis
 from mipmap_service import run_mipmap_pipeline, copy_splat_outputs, check_mipmap
 from opensplat_service import (
     run_opensplat_pipeline,
@@ -477,11 +477,11 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     # 8. Write manifest
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # 8b. GIS-ready exports (photo points, flight tracks). Delivered job
-    # types (preset gis_delivery) write to gis/; the rest write to _gis/,
-    # which drive_delivery skips — kept for SAI records only.
+    # 8b. GIS-ready exports (photo points, flight tracks). Any preset that
+    # produces an orthomosaic delivers them to the client in gis/; the rest
+    # write to _gis/, which drive_delivery skips — SAI records only.
     gis_files = {}
-    gis_delivered = bool(preset.get("gis_delivery"))
+    gis_delivered = delivers_gis(preset)
     try:
         from gis_export import export_mission_gis
         gis_dir = "gis" if gis_delivered else "_gis"
@@ -713,10 +713,11 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
 
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # GIS-ready exports — same delivery policy as process_job: preset
-    # gis_delivery → client gis/, otherwise internal _gis/ (delivery skips)
+    # GIS-ready exports — same delivery policy as process_job: an
+    # orthomosaic in the deliverables means GIS ships to the client,
+    # otherwise internal _gis/ (delivery skips)
     gis_files = {}
-    gis_delivered = bool(preset.get("gis_delivery"))
+    gis_delivered = delivers_gis(preset)
     try:
         from gis_export import export_mission_gis
         gis_dir = "gis" if gis_delivered else "_gis"

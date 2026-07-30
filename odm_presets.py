@@ -37,6 +37,24 @@ def engine_requires_nodeodm(engine):
     """Return whether a processing engine needs the NodeODM service."""
     return engine not in LOCAL_ENGINES
 
+
+def delivers_gis(preset):
+    """Whether GIS exports go to the client, derived from the orthomosaic.
+
+    Policy (Adam, 2026-07-30): GIS exports — photo points and flight
+    tracks — are part of ANY mission that produces an orthomosaic. If the
+    client is getting a georeferenced raster they can open in QGIS, they
+    get the sidecars that make it useful.
+
+    This supersedes the hand-kept `gis_delivery` flag locked 2026-07-12,
+    which listed only survey, construction and vegetation. That flag had
+    drifted: roof_inspection, structures and real_estate all ship an
+    orthophoto and were silently routing their GIS exports to the
+    internal _gis/ directory, which drive_delivery skips. Deriving it
+    from `downloads` means a new preset cannot forget to opt in.
+    """
+    return any("orthophoto" in target for target in preset.get("downloads", ()))
+
 # ── Shared option blocks ────────────────────────────────────────────────────
 
 # Split-merge: keeps each submodel's memory footprint bounded.
@@ -84,7 +102,6 @@ PRESETS = {
         "downloads": ["orthophoto.tif", "dsm.tif"],
         "report_type": "construction_progress",
         # GIS exports (photo points, tracks, KML) go in the client delivery
-        "gis_delivery": True,
     },
 
     # ── Property Survey ──────────────────────────────────────────────────
@@ -116,7 +133,6 @@ PRESETS = {
         ] + _OUTPUT_OPTS + _SPLIT_MERGE,
         "downloads": ["orthophoto.tif", "dsm.tif", "dtm.tif", "georeferenced_model.laz"],
         "report_type": "property_survey",
-        "gis_delivery": True,
     },
 
     # ── Roof Inspection ──────────────────────────────────────────────────
@@ -212,7 +228,6 @@ PRESETS = {
         "report_type": "vegetation",
         # Post-ODM headless QGIS VARI analysis (vegetation_analysis.py)
         "vegetation_analysis": True,
-        "gis_delivery": True,
     },
 
     # ── Real Estate / Marketing ──────────────────────────────────────────
@@ -325,11 +340,6 @@ PRESETS = {
         ] + _OUTPUT_OPTS + _SPLIT_MERGE,
         "downloads": ["orthophoto.tif", "dsm.tif", "georeferenced_model.laz"],
         "report_type": "pavement",
-        # No gis_delivery: that flag only governs the photo-point and
-        # flight-track sidecars, not the orthophoto (which ships via
-        # downloads regardless). Widening the 2026-07-12 client-GIS policy
-        # to a new service line is Adam's call, not a side effect of
-        # adding the preset.
     },
 
     # ── Steeple / Spire ───────────────────────────────────────────────────
@@ -415,7 +425,6 @@ PRESETS = {
             "textured_model.zip", "georeferenced_model.laz",
         ],
         "report_type": "church_campus",
-        # See the pavement note — same locked GIS-delivery policy applies.
     },
 }
 
