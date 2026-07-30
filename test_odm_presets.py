@@ -5,11 +5,13 @@ from odm_presets import PRESETS, get_preset, JOB_TYPES
 
 
 class TestPresets:
-    def test_all_eight_job_types_exist(self):
+    def test_all_job_types_exist(self):
         expected = {
             "construction_progress", "property_survey", "roof_inspection",
             "structures", "vegetation", "real_estate", "gaussian_splat",
             "panorama",
+            # report-system-spec-v1 §5.2 / §5.5 lines, added 2026-07-30
+            "pavement", "steeple", "church_campus",
         }
         assert set(PRESETS.keys()) == expected
 

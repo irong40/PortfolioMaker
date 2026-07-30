@@ -86,6 +86,12 @@ PRESET_TO_JOB_TYPE = {
     "forestry_chm": "property_survey",
     "corridor_mapping": "property_survey",
     "scene_reconstruction": "structures",
+    # Church/pavement lines (report-system-spec-v1 §5.2 and §5.5). Unlike the
+    # block above these DO have dedicated presets in odm_presets.py, so they
+    # map to themselves rather than to a nearest neighbour.
+    "pavement": "pavement",
+    "steeple": "steeple",
+    "church_campus": "church_campus",
     "video": None,
     "wildlife_census_thermal": None,
 }
@@ -354,6 +360,9 @@ REPORT_TEMPLATE_CODES = {
     "structures": "structures_inspection",
     "vegetation": "vegetation_analysis",
     "real_estate": "re_aerial_photography",
+    "pavement": "pavement_pci",
+    "steeple": "steeple_inspection",
+    "church_campus": "church_campus_survey",
 }
 
 

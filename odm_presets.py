@@ -23,6 +23,9 @@ JOB_TYPES = [
     ("real_estate", "Real Estate / Marketing"),
     ("gaussian_splat", "Gaussian Splat"),
     ("panorama", "Panorama / 360"),
+    ("pavement", "Parking Lot / Pavement"),
+    ("steeple", "Steeple / Spire"),
+    ("church_campus", "Church Campus"),
 ]
 
 # Engines that run entirely on this machine. Every other engine value means
@@ -289,6 +292,130 @@ PRESETS = {
         "odm_options": [],
         "downloads": [],
         "report_type": "panorama",
+    },
+
+    # ── Parking Lot / Pavement ────────────────────────────────────────────
+    # ASTM D6433. The orthomosaic IS the deliverable here: sample units are
+    # measured off it, so resolution beats every other consideration and
+    # orthophoto-resolution 1 is not negotiable. Flown as two nadir passes
+    # per SOP-002B (wide grid, then medium-tele detail), so photo_filter
+    # stays nadir and both passes land in the same reconstruction.
+    # crop 0 because curbs, entrances and lot edges are in scope — an
+    # auto-cropped ortho loses exactly the distresses at the boundary.
+    # DSM retained for ponding and rutting, which read as depressions.
+    # sfm-algorithm: triangulation, correct for flat nadir-only grids.
+    "pavement": {
+        "label": "Parking Lot / Pavement",
+        "description": "High-resolution orthomosaic for ASTM D6433 distress inventory",
+        "photo_filter": "nadir",
+        "min_photos": 30,
+        "odm_options": [
+            {"name": "dsm", "value": True},
+            {"name": "orthophoto-resolution", "value": 1},
+            {"name": "dem-resolution", "value": 2},
+            {"name": "pc-quality", "value": "high"},
+            {"name": "feature-quality", "value": "ultra"},
+            {"name": "min-num-features", "value": 16000},
+            {"name": "crop", "value": 0},
+            {"name": "auto-boundary", "value": True},
+            {"name": "orthophoto-cutline", "value": True},
+            {"name": "sfm-algorithm", "value": "triangulation"},
+            {"name": "gps-accuracy", "value": 0.02},
+            {"name": "pc-las", "value": True},
+        ] + _OUTPUT_OPTS + _SPLIT_MERGE,
+        "downloads": ["orthophoto.tif", "dsm.tif", "georeferenced_model.laz"],
+        "report_type": "pavement",
+        # No gis_delivery: that flag only governs the photo-point and
+        # flight-track sidecars, not the orthophoto (which ships via
+        # downloads regardless). Widening the 2026-07-12 client-GIS policy
+        # to a new service line is Adam's call, not a side effect of
+        # adding the preset.
+    },
+
+    # ── Steeple / Spire ───────────────────────────────────────────────────
+    # A steeple job is a roof job plus the six added zones in
+    # report-system-spec-v1 §5.5. Capture is the roof sequence followed by
+    # two overlapping orbit rings and one close oblique per zone, so the set
+    # is oblique-heavy and sky-removal is mandatory — a spire is shot almost
+    # entirely against sky. use-3dmesh for the vertical geometry.
+    # min_photos 60: roof grid + two rings + six zone close-ups cannot come
+    # in under that, and a short set means a missing zone, which is a re-fly.
+    #
+    # The spec's second deliverable is the splat viewer link. That is a
+    # SEPARATE gaussian_splat run over the same photos, not a second engine
+    # here — photogrammetry mangles finials and crockets, which is the whole
+    # reason the splat exists. Run steeple for the report evidence, then
+    # gaussian_splat for the viewer.
+    "steeple": {
+        "label": "Steeple / Spire",
+        "description": "Roof mesh + steeple zone documentation (pair with a splat run)",
+        "photo_filter": None,
+        "min_photos": 60,
+        "odm_options": [
+            {"name": "dsm", "value": True},
+            {"name": "use-3dmesh", "value": True},
+            {"name": "mesh-octree-depth", "value": 12},
+            {"name": "mesh-size", "value": 600000},
+            {"name": "orthophoto-resolution", "value": 1},
+            {"name": "pc-quality", "value": "high"},
+            {"name": "feature-quality", "value": "ultra"},
+            {"name": "min-num-features", "value": 16000},
+            {"name": "crop", "value": 0},
+            {"name": "auto-boundary", "value": True},
+            {"name": "sky-removal", "value": True},
+            {"name": "pc-las", "value": True},
+            {"name": "gltf", "value": True},
+            {"name": "3d-tiles", "value": True},
+        ] + _OUTPUT_OPTS + _SPLIT_MERGE,
+        "downloads": [
+            "orthophoto.tif", "dsm.tif",
+            "textured_model.zip", "georeferenced_model.laz",
+        ],
+        "report_type": "steeple",
+    },
+
+    # ── Church Campus ─────────────────────────────────────────────────────
+    # The whole-campus bundle: sanctuary roof and steeple, parking lot
+    # pavement, and a grounds orthomosaic in one visit. The capture is
+    # genuinely mixed — nadir grid over grounds and lot, oblique orbits over
+    # the building — so no photo_filter, incremental SfM (the default for
+    # mixed sets), and both the ortho and the mesh matter.
+    #
+    # orthophoto-resolution 1 rather than 2 because the lot inside this
+    # bundle is still scored against D6433, and a 2 cm ortho cannot carry a
+    # low-severity crack. That makes this the most expensive preset in the
+    # file; it is a full-day deliverable, priced accordingly.
+    "church_campus": {
+        "label": "Church Campus",
+        "description": "Roof + steeple + lot + grounds — whole-campus documentation",
+        "photo_filter": None,
+        "min_photos": 80,
+        "odm_options": [
+            {"name": "dsm", "value": True},
+            {"name": "dtm", "value": True},
+            {"name": "use-3dmesh", "value": True},
+            {"name": "mesh-octree-depth", "value": 12},
+            {"name": "mesh-size", "value": 600000},
+            {"name": "orthophoto-resolution", "value": 1},
+            {"name": "dem-resolution", "value": 2},
+            {"name": "pc-quality", "value": "high"},
+            {"name": "feature-quality", "value": "ultra"},
+            {"name": "min-num-features", "value": 16000},
+            {"name": "crop", "value": 0},
+            {"name": "auto-boundary", "value": True},
+            {"name": "sky-removal", "value": True},
+            {"name": "orthophoto-cutline", "value": True},
+            {"name": "pc-classify", "value": True},
+            {"name": "pc-las", "value": True},
+            {"name": "gltf", "value": True},
+            {"name": "3d-tiles", "value": True},
+        ] + _OUTPUT_OPTS + _SPLIT_MERGE,
+        "downloads": [
+            "orthophoto.tif", "dsm.tif", "dtm.tif",
+            "textured_model.zip", "georeferenced_model.laz",
+        ],
+        "report_type": "church_campus",
+        # See the pavement note — same locked GIS-delivery policy applies.
     },
 }
 
