@@ -132,6 +132,25 @@ STEPS = [
     ("deliver", "Deliver"),
 ]
 
+# Reel packages come from reel_job.PACKAGE_PRESETS (duration + music mood).
+# Listed here so the GUI does not import the renderer at module load.
+REEL_PACKAGES = ("listing_lite", "listing_pro", "luxury",
+                 "commercial_marketing", "construction", "inspection")
+
+JOB_TYPE_TO_REEL_PACKAGE = {
+    "construction_progress": "construction",
+    "roof_inspection": "inspection",
+    "structures": "inspection",
+    "property_survey": "inspection",
+    "pavement": "inspection",
+    "steeple": "inspection",
+    "church_campus": "commercial_marketing",
+    "vegetation": "construction",
+    "real_estate": "listing_pro",
+    "gaussian_splat": "listing_pro",
+    "panorama": "listing_pro",
+}
+
 STEP_HINTS = {
     "mission": "Link a CRM mission, or work unlinked for practice and portfolio.",
     "source": "Where the photos are, and where the deliverables should land.",
@@ -1156,6 +1175,141 @@ class PortfolioMakerApp:
         self._video_queue_label = ttk.Label(
             btn_row, text="", font=(FONT_FAMILY, 8), foreground=TEXT_DIM)
         self._video_queue_label.pack(side="left", padx=(10, 0))
+
+        # ── Make Reel ──────────────────────────────────────────────────────
+        # reel_renderer.py has produced real deliverables since 7/12 but had
+        # no GUI surface at all — the only way to reach it was two CLI calls.
+        reel_row = ttk.Frame(self._video_panel)
+        reel_row.pack(fill="x", pady=(8, 0))
+
+        ttk.Label(reel_row, text="Reel package:").pack(side="left")
+        self.reel_package_var = tk.StringVar(value="listing_pro")
+        self._reel_combo = ttk.Combobox(
+            reel_row, textvariable=self.reel_package_var,
+            values=sorted(REEL_PACKAGES), state="readonly", width=22)
+        self._reel_combo.pack(side="left", padx=(8, 0))
+
+        self._reel_btn = ttk.Button(
+            reel_row, text="Make Reel", command=self._on_make_reel,
+            style="Accent.TButton")
+        self._reel_btn.pack(side="left", padx=(8, 0))
+
+        self._reel_hint_var = tk.StringVar(value="")
+        ttk.Label(reel_row, textvariable=self._reel_hint_var,
+                  font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(
+                      side="left", padx=(10, 0))
+
+        # Default the package from the job type; the operator can override.
+        self.job_type_var.trace_add("write", self._sync_reel_package)
+        self._sync_reel_package()
+
+    def _sync_reel_package(self, *_args):
+        """Follow the job type unless the operator has picked something else."""
+        suggested = JOB_TYPE_TO_REEL_PACKAGE.get(self.job_type_var.get())
+        if suggested and not getattr(self, "_reel_package_touched", False):
+            self.reel_package_var.set(suggested)
+
+    def _on_make_reel(self):
+        """Build a reel job from the current scan and render it in-process."""
+        if self._running:
+            messagebox.showinfo("Busy", "A job is already running.",
+                                parent=self.root)
+            return
+        if not self._found_videos:
+            messagebox.showwarning("No videos",
+                "No MP4s were found in the photo folder — a reel needs clips.",
+                parent=self.root)
+            return
+
+        selected = self._video_listbox.curselection()
+        clips = [self._found_videos[i] for i in selected] if selected \
+            else list(self._found_videos)
+        if not clips:
+            messagebox.showwarning("Nothing selected",
+                "Select at least one video from the list.", parent=self.root)
+            return
+
+        package = self.reel_package_var.get()
+        site = self.site_name_var.get().strip() or "Unnamed"
+        source_dir = self.source_var.get().strip()
+        address = ""
+        if hasattr(self, "parcel_address_var"):
+            address = self.parcel_address_var.get().strip()
+
+        import reel_job as _rj
+        import reel_renderer as _rr
+        from reel_render import render_reel as _render
+
+        # Stills give the renderer Ken Burns material between flight segments.
+        try:
+            photos = [str(p) for p in _rr.scan_media(source_dir, {".jpg", ".jpeg"})]
+        except Exception:
+            photos = []
+
+        job = _rj.build_reel_job(
+            package=package, site=site, address=address,
+            source_dir=source_dir, clips=clips, photos=photos,
+        )
+        problems = _rj.validate_reel_job(job)
+        if problems:
+            messagebox.showerror("Invalid reel job", "; ".join(problems),
+                                 parent=self.root)
+            return
+
+        self._clear_log()
+        self._set_running(True)
+        self._reel_hint_var.set("rendering…")
+        self.status_var.set(f"Rendering {package} reel — this takes a few minutes")
+        self._log(f"Reel: {package} · {len(clips)} clip(s) · {len(photos)} still(s)")
+        self.progress_var.set(5)
+
+        def rlog(msg):
+            self.root.after(0, self._log, str(msg))
+
+        def work():
+            queued = _rj.enqueue_reel_job(job)
+            claimed = _rj.claim_job(queued)
+            music = _rj.pick_music_track(job, _rr.MUSIC_POOL_DIR)
+            try:
+                outputs = _render(job, music, log=rlog)
+            except Exception as e:
+                _rj.fail_job(claimed, error=f"{type(e).__name__}: {e}")
+                self.root.after(0, self._reel_done, None, f"{type(e).__name__}: {e}")
+                return
+            _rj.complete_job(claimed, outputs=outputs,
+                             music_track=str(music) if music else None)
+            _rj.log_music_usage(job, music, _rr.MUSIC_POOL_DIR)
+            self.root.after(0, self._reel_done, outputs, None)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _reel_done(self, outputs, error):
+        self._set_running(False)
+        self.progress_var.set(0 if error else 100)
+        if error:
+            self._reel_hint_var.set("failed")
+            self._log(f"\nReel failed: {error}")
+            self.status_var.set("Reel render failed")
+            messagebox.showerror("Reel failed", error, parent=self.root)
+            return
+
+        self._reel_hint_var.set("done")
+        self._log("\n--- Reel Complete ---")
+        for name, path in outputs.items():
+            self._log(f"  {name}: {path}")
+        self.status_var.set(f"Reel complete — {len(outputs)} deliverable(s)")
+
+        # A reel is an output folder, so it can be delivered like any other.
+        first = next(iter(outputs.values()), None)
+        if first:
+            self._last_sort_output = str(Path(first).parent)
+            self._deliver_hint_var.set(f"Ready to deliver:  {self._last_sort_output}")
+            self._deliver_btn.pack(anchor="w", pady=(10, 0))
+
+        if messagebox.askyesno("Reel Complete",
+                               f"{len(outputs)} deliverable(s) rendered.\n\n"
+                               "Open the output folder?", parent=self.root):
+            os.startfile(self._last_sort_output)
 
     def _scan_videos(self, source_dir: str) -> list[dict]:
         """Return list of {path, name, has_srt} for every MP4 in source_dir."""
