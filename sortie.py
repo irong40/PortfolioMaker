@@ -2023,9 +2023,9 @@ class PortfolioMakerApp:
                     self._log(f"  Panoramas: {result.panorama_count} sets")
                     for ps in result.panorama_sets:
                         from pathlib import Path as _P
-                        source = "DJI pre-stitched" if ps.prestitched_path else "stitch required"
+                        origin = "DJI pre-stitched" if ps.prestitched_path else "stitch required"
                         self._log(
-                            f"    {_P(ps.folder).name}: {ps.photo_count} photos ({source})")
+                            f"    {_P(ps.folder).name}: {ps.photo_count} photos ({origin})")
                 if result.panorama_stragglers:
                     skipped = sum(ps.photo_count for ps in result.panorama_stragglers)
                     self._log(f"  Panorama stragglers: {skipped} photos skipped")
@@ -2037,8 +2037,12 @@ class PortfolioMakerApp:
 
                 self._show_results()
 
-                # Video scan — show panel if any MP4s found alongside photos
-                videos = self._scan_videos(source)
+                # Video scan — show panel if any MP4s found alongside photos.
+                # This read the panorama loop's temp string, so on any folder
+                # WITHOUT panoramas the name was unbound and the whole results
+                # display raised UnboundLocalError — the video panel (Send to
+                # Content Agent / Extract Cardinal Stills) never appeared at all.
+                videos = self._scan_videos(result.source_dir)
                 if videos:
                     self._show_video_panel(videos)
                     self._log(f"\nVideos found: {len(videos)}")
