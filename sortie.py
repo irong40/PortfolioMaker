@@ -112,6 +112,35 @@ RED = "#E74C3C"
 FONT_FAMILY = "Segoe UI"
 ICON_FILE = SCRIPT_DIR / "sortie.ico"
 
+# Shell chrome (stepper rail + status strip)
+RAIL_BG = "#241040"          # rail sits between header and canvas in tone
+RAIL_ACTIVE = "#3A1A5C"      # selected step pill
+RAIL_TEXT = "#C9B3DA"
+RAIL_TEXT_ACTIVE = "#FFFFFF"
+RAIL_NUM_IDLE = "#6E5385"
+HAIRLINE = "#E4DCEA"         # 1px separators, card borders
+AMBER = "#D68910"            # "present but not a live probe"
+CARD_TITLE = "#4A2560"
+
+# Stepper definition — order is the real workflow order.
+STEPS = [
+    ("mission", "Mission"),
+    ("source", "Source"),
+    ("config", "Config"),
+    ("preflight", "Pre-Flight"),
+    ("process", "Process"),
+    ("deliver", "Deliver"),
+]
+
+STEP_HINTS = {
+    "mission": "Link a CRM mission, or work unlinked for practice and portfolio.",
+    "source": "Where the photos are, and where the deliverables should land.",
+    "config": "Job type, site name, and an optional client sort profile.",
+    "preflight": "Parcel boundary, canopy calibration, and PPK correction.",
+    "process": "Scan the folder, review the counts, then run the job.",
+    "deliver": "Push finished deliverables to Drive.",
+}
+
 
 # ─── CUSTOM STYLES ─────────────────────────────────────────────────────────
 
@@ -122,23 +151,45 @@ def configure_styles():
     style.configure(".", font=(FONT_FAMILY, 9), background=BG_COLOR)
     style.configure("TFrame", background=BG_COLOR)
     style.configure("TLabel", background=BG_COLOR, font=(FONT_FAMILY, 9))
-    style.configure("TLabelframe", background=BG_COLOR)
+
+    # Cards: flat, hairline-bordered, generous padding — replaces the
+    # ridged 3-D LabelFrame look that made 13 stacked panels read as noise.
+    style.configure("TLabelframe", background=BG_COLOR,
+                    bordercolor=HAIRLINE, relief="solid", borderwidth=1)
     style.configure("TLabelframe.Label", background=BG_COLOR,
-                    font=(FONT_FAMILY, 9, "bold"), foreground=SENTINEL_PURPLE)
+                    font=(FONT_FAMILY, 9, "bold"), foreground=CARD_TITLE)
 
-    style.configure("Accent.TButton", font=(FONT_FAMILY, 10, "bold"), padding=(16, 8))
+    style.configure("Accent.TButton", font=(FONT_FAMILY, 10, "bold"),
+                    padding=(18, 9), borderwidth=0, focuscolor=SENTINEL_PURPLE)
     style.map("Accent.TButton",
-              background=[("active", SENTINEL_MID), ("!active", SENTINEL_PURPLE)],
-              foreground=[("active", "white"), ("!active", "white")])
+              background=[("disabled", "#C9BCD4"), ("active", SENTINEL_MID),
+                          ("!active", SENTINEL_PURPLE)],
+              foreground=[("disabled", "#F0EAF4"), ("active", "white"),
+                          ("!active", "white")])
 
-    style.configure("Secondary.TButton", font=(FONT_FAMILY, 9), padding=(12, 6))
+    style.configure("Secondary.TButton", font=(FONT_FAMILY, 9), padding=(13, 7))
+
+    # Quiet tertiary button for rail nav ("Back")
+    style.configure("Ghost.TButton", font=(FONT_FAMILY, 9), padding=(13, 7),
+                    borderwidth=0)
+    style.map("Ghost.TButton",
+              background=[("active", "#EBE3F0"), ("!active", BG_COLOR)],
+              foreground=[("!active", SENTINEL_PURPLE)])
 
     style.configure("Sentinel.Horizontal.TProgressbar",
-                    troughcolor="#E8E0ED", background=SENTINEL_PURPLE, thickness=8)
+                    troughcolor="#E8E0ED", background=SENTINEL_PURPLE,
+                    thickness=8, borderwidth=0)
 
-    style.configure("TEntry", padding=4)
+    style.configure("TEntry", padding=6)
+    style.configure("TCombobox", padding=5)
     style.configure("TCheckbutton", background=BG_COLOR, font=(FONT_FAMILY, 9))
     style.configure("TRadiobutton", background=BG_COLOR, font=(FONT_FAMILY, 9))
+
+    # Page heading inside a step
+    style.configure("StepTitle.TLabel", font=(FONT_FAMILY, 15, "bold"),
+                    foreground=SENTINEL_DARK, background=BG_COLOR)
+    style.configure("StepHint.TLabel", font=(FONT_FAMILY, 9),
+                    foreground=TEXT_DIM, background=BG_COLOR)
 
 
 # ─── STAT BADGE WIDGET ────────────────────────────────────────────────────
@@ -164,7 +215,8 @@ class PortfolioMakerApp:
         self.root.title("Sortie")
         self.root.configure(bg=BG_COLOR)
         self.root.resizable(True, True)
-        self.root.minsize(760, 780)
+        # Wider (rail + page) but much shorter — steps replaced the tall scroll.
+        self.root.minsize(940, 660)
 
         if ICON_FILE.exists():
             try:
@@ -190,15 +242,28 @@ class PortfolioMakerApp:
         self._build_menubar()
         self._build_header()
         self._build_status_bar()  # Pack bottom first so canvas doesn't steal its space
-        self._build_input_section()
+        self._build_shell()
+
+        # Each builder packs into self._content; point it at the step page
+        # that owns those panels. Panels linked by pack(before=...) must stay
+        # on one page — preflight+PPK+scan, and results+video+advanced+actions.
+        self._content = self._pages["mission"]
+        self._build_input_section()   # walks mission → source → config
+
+        self._content = self._pages["preflight"]
         self._build_ppk_banner()
         self._build_preflight_section()
         self._build_scan_button()
+
+        self._content = self._pages["process"]
         self._build_results_section()
         self._build_video_panel()
         self._build_advanced_section()
         self._build_action_buttons()
         self._build_progress_section()
+
+        self._content = self._pages["deliver"]
+        self._build_deliver_section()
 
         # Restore saved settings
         self._apply_settings()
@@ -209,6 +274,9 @@ class PortfolioMakerApp:
         self._video_panel.pack_forget()
         self._action_frame.pack_forget()
         self._ppk_frame.pack_forget()
+
+        # Open on the first step
+        self._show_step(STEPS[0][0])
 
         # Save settings on close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -230,9 +298,9 @@ class PortfolioMakerApp:
             self.root.geometry(saved_geo)
         else:
             self.root.update_idletasks()
-            x = (self.root.winfo_screenwidth() // 2) - 390
-            y = (self.root.winfo_screenheight() // 2) - 400
-            self.root.geometry(f"780x800+{x}+{y}")
+            x = (self.root.winfo_screenwidth() // 2) - 500
+            y = (self.root.winfo_screenheight() // 2) - 360
+            self.root.geometry(f"1000x720+{x}+{y}")
 
     def _apply_settings(self):
         """Restore saved settings into UI vars."""
@@ -388,84 +456,216 @@ class PortfolioMakerApp:
     # ── Build: Header ──
 
     def _build_header(self):
-        header = tk.Frame(self.root, bg=SENTINEL_PURPLE, padx=20, pady=14)
+        header = tk.Frame(self.root, bg=SENTINEL_PURPLE, padx=20, pady=12)
         header.pack(fill="x")
 
         title_row = tk.Frame(header, bg=SENTINEL_PURPLE)
         title_row.pack(fill="x")
 
         tk.Label(title_row, text="Sortie",
-                 font=(FONT_FAMILY, 18, "bold"), fg="white",
+                 font=(FONT_FAMILY, 17, "bold"), fg="white",
                  bg=SENTINEL_PURPLE).pack(side="left")
 
-        # NodeODM status indicator
-        self._nodeodm_frame = tk.Frame(title_row, bg=SENTINEL_PURPLE)
-        self._nodeodm_frame.pack(side="right")
-        self._nodeodm_dot = tk.Canvas(self._nodeodm_frame, width=10, height=10,
-                                       bg=SENTINEL_PURPLE, highlightthickness=0)
-        self._nodeodm_dot.pack(side="left", padx=(0, 4))
-        self._nodeodm_dot.create_oval(1, 1, 9, 9, fill=TEXT_DIM, outline="")
-        self._nodeodm_label = tk.Label(self._nodeodm_frame, text="NodeODM",
-                                        font=(FONT_FAMILY, 8), fg=TEXT_DIM,
-                                        bg=SENTINEL_PURPLE)
-        self._nodeodm_label.pack(side="left")
-
-        # MipMap status indicator
-        self._mipmap_frame = tk.Frame(title_row, bg=SENTINEL_PURPLE)
-        self._mipmap_frame.pack(side="right", padx=(0, 12))
-        self._mipmap_dot = tk.Canvas(self._mipmap_frame, width=10, height=10,
-                                      bg=SENTINEL_PURPLE, highlightthickness=0)
-        self._mipmap_dot.pack(side="left", padx=(0, 4))
-        self._mipmap_dot.create_oval(1, 1, 9, 9, fill=TEXT_DIM, outline="")
-        self._mipmap_label = tk.Label(self._mipmap_frame, text="MipMap",
-                                       font=(FONT_FAMILY, 8), fg=TEXT_DIM,
-                                       bg=SENTINEL_PURPLE)
-        self._mipmap_label.pack(side="left")
-
-        tk.Label(header, text="Select job type  |  Scan photos  |  Process or sort",
-                 font=(FONT_FAMILY, 9), fg="#D7BDE2",
-                 bg=SENTINEL_PURPLE).pack(anchor="w")
+        # Mission chip — the one line that says which job you are on.
+        self._mission_chip_var = tk.StringVar(value="Practice / Portfolio")
+        self._mission_chip = tk.Label(
+            title_row, textvariable=self._mission_chip_var,
+            font=(FONT_FAMILY, 9, "bold"), fg="#E8DAF0", bg=RAIL_ACTIVE,
+            padx=10, pady=3)
+        self._mission_chip.pack(side="left", padx=(12, 0))
 
         engine = "drone-pipeline" if PIPELINE_AVAILABLE else "standalone"
-        tk.Label(header, text=f"Engine: {engine}",
+        tk.Label(title_row, text=f"engine: {engine}",
                  font=(FONT_FAMILY, 8), fg=SENTINEL_MID,
-                 bg=SENTINEL_PURPLE).pack(anchor="w")
+                 bg=SENTINEL_PURPLE).pack(side="right")
+
+        # ── Connection strip ──────────────────────────────────────────────
+        # Honest by construction: live-probed services get a real dot that
+        # _update_*_indicator recolors. n8n is NOT probed (its processing
+        # tier was retired 2026-07-27, ADR: sortie is the system of record),
+        # so it renders as a muted informational chip, never a green dot.
+        strip = tk.Frame(self.root, bg=RAIL_BG, padx=20, pady=7)
+        strip.pack(fill="x")
+
+        # CRM (live — populated by _populate_crm_dropdown)
+        self._crm_status_frame = tk.Frame(strip, bg=RAIL_BG)
+        self._crm_status_frame.pack(side="left", padx=(0, 20))
+        self._crm_dot = tk.Canvas(self._crm_status_frame, width=10, height=10,
+                                  bg=RAIL_BG, highlightthickness=0)
+        self._crm_dot.pack(side="left", padx=(0, 5))
+        self._crm_dot.create_oval(1, 1, 9, 9, fill=TEXT_DIM, outline="")
+        self._crm_status_label = tk.Label(
+            self._crm_status_frame, text="CRM checking…",
+            font=(FONT_FAMILY, 8), fg=RAIL_TEXT, bg=RAIL_BG)
+        self._crm_status_label.pack(side="left")
+
+        # NodeODM (live probe — attribute names preserved for the updaters)
+        self._nodeodm_frame = tk.Frame(strip, bg=RAIL_BG)
+        self._nodeodm_frame.pack(side="left", padx=(0, 20))
+        self._nodeodm_dot = tk.Canvas(self._nodeodm_frame, width=10, height=10,
+                                       bg=RAIL_BG, highlightthickness=0)
+        self._nodeodm_dot.pack(side="left", padx=(0, 5))
+        self._nodeodm_dot.create_oval(1, 1, 9, 9, fill=TEXT_DIM, outline="")
+        self._nodeodm_label = tk.Label(self._nodeodm_frame, text="NodeODM",
+                                        font=(FONT_FAMILY, 8), fg=RAIL_TEXT,
+                                        bg=RAIL_BG)
+        self._nodeodm_label.pack(side="left")
+
+        # Splat engine (live probe)
+        self._mipmap_frame = tk.Frame(strip, bg=RAIL_BG)
+        self._mipmap_frame.pack(side="left", padx=(0, 20))
+        self._mipmap_dot = tk.Canvas(self._mipmap_frame, width=10, height=10,
+                                      bg=RAIL_BG, highlightthickness=0)
+        self._mipmap_dot.pack(side="left", padx=(0, 5))
+        self._mipmap_dot.create_oval(1, 1, 9, 9, fill=TEXT_DIM, outline="")
+        self._mipmap_label = tk.Label(self._mipmap_frame, text="Splat engine",
+                                       font=(FONT_FAMILY, 8), fg=RAIL_TEXT,
+                                       bg=RAIL_BG)
+        self._mipmap_label.pack(side="left")
+
+        # n8n — informational only, deliberately not a status dot
+        n8n_frame = tk.Frame(strip, bg=RAIL_BG)
+        n8n_frame.pack(side="right")
+        tk.Label(n8n_frame, text="n8n: alerts only · sortie processes locally",
+                 font=(FONT_FAMILY, 8), fg=RAIL_NUM_IDLE,
+                 bg=RAIL_BG).pack(side="left")
+
+    # ── Build: Shell (stepper rail + step pages + nav) ──
+
+    def _build_shell(self):
+        """Left rail of numbered steps, a scrollable page area, and a nav bar.
+
+        Replaces the single 13-panel scrolling column. Every original panel
+        still exists and keeps its widgets, variables and callbacks — this
+        only changes which parent it is packed into and when it is shown.
+        """
+        body = ttk.Frame(self.root)
+        body.pack(fill="both", expand=True)
+
+        # ── Rail ──
+        rail = tk.Frame(body, bg=RAIL_BG, width=158)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+
+        self._rail_rows = {}
+        for idx, (key, label) in enumerate(STEPS):
+            row = tk.Frame(rail, bg=RAIL_BG, padx=12, pady=9)
+            row.pack(fill="x")
+            num = tk.Label(row, text=str(idx + 1),
+                           font=(FONT_FAMILY, 9, "bold"),
+                           fg=RAIL_NUM_IDLE, bg=RAIL_BG, width=2)
+            num.pack(side="left")
+            name = tk.Label(row, text=label, font=(FONT_FAMILY, 9),
+                            fg=RAIL_TEXT, bg=RAIL_BG, anchor="w")
+            name.pack(side="left", fill="x", expand=True)
+            self._rail_rows[key] = (row, num, name)
+
+            # Rail entries are navigable — no gating, so nothing that worked
+            # before becomes unreachable.
+            for w in (row, num, name):
+                w.bind("<Button-1>", lambda _e, k=key: self._show_step(k))
+                w.configure(cursor="hand2")
+
+        # ── Page area (scrollable, so tall steps still work) ──
+        page_host = ttk.Frame(body)
+        page_host.pack(side="left", fill="both", expand=True)
+
+        self._scroll_canvas = tk.Canvas(page_host, bg=BG_COLOR,
+                                         highlightthickness=0, bd=0)
+        self._scroll_vsb = ttk.Scrollbar(page_host, orient="vertical",
+                                          command=self._scroll_canvas.yview)
+        self._scroll_canvas.configure(yscrollcommand=self._scroll_vsb.set)
+        self._scroll_vsb.pack(side="right", fill="y")
+        self._scroll_canvas.pack(side="left", fill="both", expand=True)
+
+        self._scroll_inner = ttk.Frame(self._scroll_canvas)
+        self._content_window = self._scroll_canvas.create_window(
+            (0, 0), window=self._scroll_inner, anchor="nw")
+
+        def _on_canvas_configure(event):
+            self._scroll_canvas.itemconfigure(self._content_window,
+                                              width=event.width)
+        self._scroll_canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_content_configure(_event):
+            self._scroll_canvas.configure(
+                scrollregion=self._scroll_canvas.bbox("all"))
+        self._scroll_inner.bind("<Configure>", _on_content_configure)
+
+        def _on_mousewheel(event):
+            self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)),
+                                             "units")
+        self._scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        self._scroll_inner.configure(padding=(20, 16, 20, 0))
+
+        # One frame per step. Builders target these via self._content.
+        self._pages = {}
+        for key, label in STEPS:
+            page = ttk.Frame(self._scroll_inner)
+            head = ttk.Frame(page)
+            head.pack(fill="x", pady=(0, 12))
+            ttk.Label(head, text=label, style="StepTitle.TLabel").pack(anchor="w")
+            ttk.Label(head, text=STEP_HINTS.get(key, ""),
+                      style="StepHint.TLabel").pack(anchor="w", pady=(2, 0))
+            ttk.Separator(page, orient="horizontal").pack(fill="x", pady=(0, 12))
+            self._pages[key] = page
+
+        # ── Nav bar ──
+        nav = tk.Frame(self.root, bg=BG_COLOR, padx=20, pady=10)
+        nav.pack(fill="x", side="bottom")
+        tk.Frame(nav, bg=HAIRLINE, height=1).pack(fill="x", side="top",
+                                                  pady=(0, 10))
+        self._back_btn = ttk.Button(nav, text="←  Back",
+                                    command=self._step_back,
+                                    style="Ghost.TButton")
+        self._back_btn.pack(side="left")
+        self._next_btn = ttk.Button(nav, text="Next  →",
+                                    command=self._step_next,
+                                    style="Secondary.TButton")
+        self._next_btn.pack(side="right")
+
+        self._current_step = STEPS[0][0]
+
+    def _show_step(self, key):
+        """Swap the visible step page and repaint the rail."""
+        for page in self._pages.values():
+            page.pack_forget()
+        self._pages[key].pack(fill="both", expand=True)
+        self._current_step = key
+
+        for k, (row, num, name) in self._rail_rows.items():
+            active = (k == key)
+            bg = RAIL_ACTIVE if active else RAIL_BG
+            row.configure(bg=bg)
+            num.configure(bg=bg,
+                          fg=RAIL_TEXT_ACTIVE if active else RAIL_NUM_IDLE)
+            name.configure(bg=bg,
+                           fg=RAIL_TEXT_ACTIVE if active else RAIL_TEXT,
+                           font=(FONT_FAMILY, 9, "bold") if active
+                           else (FONT_FAMILY, 9))
+
+        idx = [k for k, _ in STEPS].index(key)
+        self._back_btn.configure(state="normal" if idx > 0 else "disabled")
+        self._next_btn.configure(
+            state="normal" if idx < len(STEPS) - 1 else "disabled")
+        self._scroll_canvas.yview_moveto(0)
+
+    def _step_next(self):
+        keys = [k for k, _ in STEPS]
+        idx = keys.index(self._current_step)
+        if idx < len(keys) - 1:
+            self._show_step(keys[idx + 1])
+
+    def _step_back(self):
+        keys = [k for k, _ in STEPS]
+        idx = keys.index(self._current_step)
+        if idx > 0:
+            self._show_step(keys[idx - 1])
 
     # ── Build: Input Section (folder + job type + site name) ──
 
     def _build_input_section(self):
-        # Scrollable container: Canvas + Scrollbar between header and status bar
-        self._scroll_canvas = tk.Canvas(self.root, bg=BG_COLOR,
-                                         highlightthickness=0, bd=0)
-        self._scroll_vsb = ttk.Scrollbar(self.root, orient="vertical",
-                                          command=self._scroll_canvas.yview)
-        self._scroll_canvas.configure(yscrollcommand=self._scroll_vsb.set)
-
-        self._scroll_vsb.pack(side="right", fill="y")
-        self._scroll_canvas.pack(fill="both", expand=True)
-
-        self._content = ttk.Frame(self._scroll_canvas)
-        self._content_window = self._scroll_canvas.create_window(
-            (0, 0), window=self._content, anchor="nw")
-
-        # Keep content width in sync with canvas width
-        def _on_canvas_configure(event):
-            self._scroll_canvas.itemconfigure(self._content_window, width=event.width)
-        self._scroll_canvas.bind("<Configure>", _on_canvas_configure)
-
-        # Update scroll region when content changes size
-        def _on_content_configure(event):
-            self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox("all"))
-        self._content.bind("<Configure>", _on_content_configure)
-
-        # Mousewheel scrolling (Windows)
-        def _on_mousewheel(event):
-            self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        self._scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-        # Add padding inside the content frame
-        self._content.configure(padding=(14, 10, 14, 0))
-
         # CRM mission link (optional — sortie stays fully manual without it)
         crm_frame = ttk.LabelFrame(self._content, text="CRM Mission (optional)", padding=10)
         crm_frame.pack(fill="x", pady=(0, 8))
@@ -486,6 +686,9 @@ class PortfolioMakerApp:
         ttk.Label(crm_frame, textvariable=self._crm_hint_var,
                   font=(FONT_FAMILY, 8), foreground=TEXT_DIM,
                   wraplength=680, justify="left").pack(anchor="w", pady=(4, 0))
+
+        # ── step: source ──
+        self._content = self._pages["source"]
 
         # Photo folder
         src_frame = ttk.LabelFrame(self._content, text="Photo Folder", padding=10)
@@ -510,6 +713,9 @@ class PortfolioMakerApp:
                    style="Secondary.TButton").pack(side="left", padx=(6, 0))
         ttk.Label(out_frame, text=f"Leave blank to use default: {PORTFOLIO_ROOT}\\<site>\\<date>\\<job>",
                   font=(FONT_FAMILY, 8), foreground=TEXT_DIM).pack(anchor="w", pady=(4, 0))
+
+        # ── step: config ──
+        self._content = self._pages["config"]
 
         # Job type + site name side by side
         job_frame = ttk.LabelFrame(self._content, text="Job Configuration", padding=10)
@@ -657,7 +863,7 @@ class PortfolioMakerApp:
         self._ppk_status_label.configure(text="Ready")
         self._ppk_progress_var.set("")
         self._ppk_correct_btn.configure(state="normal")
-        self._ppk_frame.pack(in_=self._content, fill="x", pady=(0, 8),
+        self._ppk_frame.pack(fill="x", pady=(0, 8),
                               before=self.scan_btn.master)
 
     def _hide_ppk_banner(self):
@@ -729,7 +935,7 @@ class PortfolioMakerApp:
     # ── Build: Pre-Flight (Parcel Lookup + ACL Calibration) ──
 
     def _build_preflight_section(self):
-        pf_frame = ttk.LabelFrame(self._content, text="Pre-Flight", padding=10)
+        pf_frame = ttk.LabelFrame(self._content, text="Parcel & Altitude", padding=10)
         pf_frame.pack(fill="x", pady=(0, 8))
 
         # Parcel lookup
@@ -985,7 +1191,7 @@ class PortfolioMakerApp:
         self._video_listbox.select_set(0, "end")
         self._video_queue_label.configure(text="")
         self._video_panel.pack(
-            in_=self._content, fill="x", pady=(0, 8),
+            fill="x", pady=(0, 8),
             before=self._adv_toggle_frame,
         )
 
@@ -1211,11 +1417,6 @@ class PortfolioMakerApp:
             command=self._on_client_sort, style="Accent.TButton")
         # Hidden until a profile is selected and scan is done
 
-        self._deliver_btn = ttk.Button(
-            self._action_frame, text="Deliver",
-            command=self._on_deliver, style="Secondary.TButton")
-        # Shown after a successful sort; hidden initially
-
         self.cancel_btn = ttk.Button(self._action_frame, text="Cancel",
                                       command=self._on_cancel, style="Secondary.TButton")
         self.cancel_btn.pack(side="left", padx=4)
@@ -1223,6 +1424,30 @@ class PortfolioMakerApp:
 
         ttk.Button(self._action_frame, text="Quit",
                    command=self._on_close).pack(side="right")
+
+    # ── Build: Deliver step ──
+
+    def _build_deliver_section(self):
+        """Home for the Deliver action.
+
+        Same button, same command, same show-after-successful-sort rule —
+        it just lives on its own step now instead of trailing the action row.
+        """
+        deliver_frame = ttk.LabelFrame(self._content, text="Drive Delivery",
+                                       padding=12)
+        deliver_frame.pack(fill="x", pady=(0, 8))
+
+        self._deliver_hint_var = tk.StringVar(
+            value="Run a sort or a process job first — delivery unlocks "
+                  "once there is an output folder to push.")
+        ttk.Label(deliver_frame, textvariable=self._deliver_hint_var,
+                  font=(FONT_FAMILY, 9), foreground=TEXT_DIM,
+                  wraplength=560, justify="left").pack(anchor="w")
+
+        self._deliver_btn = ttk.Button(
+            deliver_frame, text="Deliver",
+            command=self._on_deliver, style="Accent.TButton")
+        # Shown after a successful sort; hidden initially
 
     # ── Build: Progress + Log ──
 
@@ -1297,9 +1522,23 @@ class PortfolioMakerApp:
             self.root.after(0, self._crm_hint_var.set,
                             "CRM not configured — set SUPABASE_URL / SUPABASE_SERVICE_KEY "
                             "in .env to link missions. Manual mode works as always.")
+            self.root.after(0, self._set_crm_status, AMBER, "CRM not configured")
             return
         missions = crm_sync.fetch_open_missions()
         self.root.after(0, self._populate_crm_dropdown, missions)
+
+    def _set_crm_status(self, color, text):
+        """Repaint the CRM dot in the connection strip. Live state only."""
+        self._crm_dot.delete("all")
+        self._crm_dot.create_oval(1, 1, 9, 9, fill=color, outline="")
+        self._crm_status_label.configure(text=text, fg=color)
+
+    def _set_mission_chip(self, text, linked):
+        """Header chip — the always-visible answer to 'which job is this?'"""
+        self._mission_chip_var.set(text)
+        self._mission_chip.configure(
+            bg=SENTINEL_PURPLE if linked else RAIL_ACTIVE,
+            fg="#FFFFFF" if linked else "#E8DAF0")
 
     def _populate_crm_dropdown(self, missions):
         self._crm_missions = missions
@@ -1309,10 +1548,12 @@ class PortfolioMakerApp:
             self._crm_hint_var.set(
                 f"{len(missions)} open mission(s) in the CRM. Pick one to prefill "
                 "this job and report progress back automatically.")
+            self._set_crm_status(GREEN, f"CRM · {len(missions)} open")
         else:
             self._crm_hint_var.set(
                 "CRM reachable, but no open missions (intake/scheduled/captured/"
                 "uploaded). Manual mode.")
+            self._set_crm_status(GREEN, "CRM · no open missions")
         # Keep the current selection valid
         if self.crm_mission_var.get() not in choices:
             self.crm_mission_var.set(CRM_MANUAL_CHOICE)
@@ -1327,6 +1568,7 @@ class PortfolioMakerApp:
         if choice == CRM_MANUAL_CHOICE:
             self._crm_job = None
             self._crm_hint_var.set("Manual mode — no CRM link for this job.")
+            self._set_mission_chip("Practice / Portfolio", linked=False)
             return
 
         mission = next((m for m in self._crm_missions if m.label == choice), None)
@@ -1359,6 +1601,7 @@ class PortfolioMakerApp:
         self._crm_hint_var.set(
             f"Linked to {mission.job_number} — progress will update the CRM. "
             + " | ".join(bits))
+        self._set_mission_chip(mission.job_number, linked=True)
 
     def _update_nodeodm_indicator(self, info):
         self._nodeodm_dot.delete("all")
@@ -1488,7 +1731,7 @@ class PortfolioMakerApp:
             self._adv_toggle_btn.configure(text="+ Advanced")
             self._advanced_visible = False
         else:
-            self._adv_frame.pack(in_=self._content, fill="x", pady=(0, 8),
+            self._adv_frame.pack(fill="x", pady=(0, 8),
                                   before=self._action_frame)
             self._adv_toggle_btn.configure(text="- Advanced")
             self._advanced_visible = True
@@ -1608,9 +1851,9 @@ class PortfolioMakerApp:
         self.results_text.configure(state="disabled")
 
     def _show_results(self):
-        self._results_frame.pack(in_=self._content, fill="x", pady=(0, 8),
+        self._results_frame.pack(fill="x", pady=(0, 8),
                                   before=self._adv_toggle_frame)
-        self._action_frame.pack(in_=self._content, fill="x", pady=(0, 8),
+        self._action_frame.pack(fill="x", pady=(0, 8),
                                  before=self.progress_bar)
 
     # ── Queue Polling ──
@@ -2098,9 +2341,10 @@ class PortfolioMakerApp:
                     self._log(f"\nAll requirements met!")
                     self.status_var.set(f"Client sort complete — {out_dir}")
 
-                # Enable delivery button
+                # Enable delivery button (now lives on the Deliver step)
                 self._last_sort_output = out_dir
-                self._deliver_btn.pack(side="left", padx=4)
+                self._deliver_hint_var.set(f"Ready to deliver:  {out_dir}")
+                self._deliver_btn.pack(anchor="w", pady=(10, 0))
 
                 if messagebox.askyesno("Sort Complete",
                         f"Photos sorted to:\n{out_dir}\n\nOpen folder?"):
