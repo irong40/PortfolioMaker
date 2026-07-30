@@ -1386,6 +1386,13 @@ class PortfolioMakerApp:
         self._results_frame.pack_forget()
         self._hide_video_panel()
         self._action_frame.pack_forget()
+        # Deliver used to be a child of _action_frame, so the pack_forget above
+        # hid it too. It lives on its own step now — hide it explicitly or a
+        # reset leaves a live Drive upload pointed at the previous job.
+        self._deliver_btn.pack_forget()
+        self._deliver_hint_var.set(
+            "Run a sort or a process job first — delivery unlocks "
+            "once there is an output folder to push.")
         self.results_text.config(state="normal")
         self.results_text.delete("1.0", "end")
         self.results_text.config(state="disabled")
