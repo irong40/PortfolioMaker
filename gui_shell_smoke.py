@@ -8,8 +8,18 @@ import sys, os
 sys.path.insert(0, r"D:\Projects\PortfolioMaker")
 os.chdir(r"D:\Projects\PortfolioMaker")
 
+import tempfile, pathlib
 import tkinter as tk
 import sortie
+
+# CRITICAL: this script calls _on_reset(), which does SETTINGS_FILE.unlink().
+# Point that at a throwaway file BEFORE building the app, or running the smoke
+# test destroys the operator's real sortie_settings.json (source folder, output
+# folder, job type, site name, threshold, NodeODM URL, client profile, window
+# geometry). The file is gitignored, so there is no recovery.
+_TMP_SETTINGS = pathlib.Path(tempfile.mkdtemp(prefix="sortie-smoke-")) / "sortie_settings.json"
+sortie.SETTINGS_FILE = _TMP_SETTINGS
+assert sortie.SETTINGS_FILE != pathlib.Path(r"D:\Projects\PortfolioMaker") / "sortie_settings.json"
 
 fail = []
 def check(cond, msg):
@@ -128,10 +138,40 @@ try:
     # or reset leaves a live Drive upload aimed at the previous job.
     check(not app._deliver_btn.winfo_ismapped(),
           "reset hides deliver button (no stale Drive upload)")
-    check("Run a sort" in app._deliver_hint_var.get(),
+    check("Sort for Client" in app._deliver_hint_var.get(),
           "reset clears the stale 'Ready to deliver' path")
 except Exception as e:
     check(False, f"_on_reset raised: {e}")
+
+print("\n[6] the app follows the work (cross-check HIGH finding)")
+# Scan lives on Pre-Flight; progress bar and live log live on Process. Without
+# _set_running auto-advancing, pressing Scan leaves the operator on a page that
+# never changes for the whole job.
+app._show_step("preflight")
+root.update_idletasks()
+app._set_running(True)
+root.update_idletasks()
+check(app._current_step == "process",
+      "starting a job advances to the Process step")
+check(app.progress_bar.winfo_ismapped(), "progress bar visible once running")
+check(app.results_text.winfo_ismapped(), "live log visible once running")
+app._set_running(False)
+
+print("\n[7] the UI does not assert unverified state")
+# fetch_open_missions() returns [] on ANY failure, so empty must not be green.
+app._populate_crm_dropdown([])
+root.update_idletasks()
+check(app._crm_status_label.cget("fg") != sortie.GREEN,
+      "empty CRM result is NOT painted green")
+# A refresh that invalidates the selection must drop the header chip too.
+app._set_mission_chip("SAI-SPEC-012", linked=True)
+app.crm_mission_var.set("SAI-SPEC-999 — gone from the CRM")
+app._populate_crm_dropdown([])
+root.update_idletasks()
+check(app._mission_chip_var.get() == "Practice / Portfolio",
+      "invalidated selection clears the mission chip")
+check("Sort for Client" in app._deliver_hint_var.get(),
+      "deliver hint names the only path that actually unlocks it")
 
 root.destroy()
 print("\n" + ("=" * 52))

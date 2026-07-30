@@ -1391,8 +1391,8 @@ class PortfolioMakerApp:
         # reset leaves a live Drive upload pointed at the previous job.
         self._deliver_btn.pack_forget()
         self._deliver_hint_var.set(
-            "Run a sort or a process job first — delivery unlocks "
-            "once there is an output folder to push.")
+            "Run a Sort for Client first — delivery unlocks only after a "
+            "client sort produces an output folder.")
         self.results_text.config(state="normal")
         self.results_text.delete("1.0", "end")
         self.results_text.config(state="disabled")
@@ -1445,8 +1445,8 @@ class PortfolioMakerApp:
         deliver_frame.pack(fill="x", pady=(0, 8))
 
         self._deliver_hint_var = tk.StringVar(
-            value="Run a sort or a process job first — delivery unlocks "
-                  "once there is an output folder to push.")
+            value="Run a Sort for Client first — delivery unlocks only after a "
+                  "client sort produces an output folder.")
         ttk.Label(deliver_frame, textvariable=self._deliver_hint_var,
                   font=(FONT_FAMILY, 9), foreground=TEXT_DIM,
                   wraplength=560, justify="left").pack(anchor="w")
@@ -1534,8 +1534,20 @@ class PortfolioMakerApp:
         missions = crm_sync.fetch_open_missions()
         self.root.after(0, self._populate_crm_dropdown, missions)
 
-    def _set_crm_status(self, color, text):
-        """Repaint the CRM dot in the connection strip. Live state only."""
+    # Callers pass a STATE, never a colour. Handing callers a raw colour is
+    # what let a failed fetch paint itself green — the one thing this strip
+    # exists to prevent.
+    CRM_STATE_COLORS = {
+        "checking": TEXT_DIM,
+        "ok": GREEN,
+        "unknown": AMBER,      # reachable-or-not is genuinely undecidable here
+        "unconfigured": AMBER,
+        "failed": RED,
+    }
+
+    def _set_crm_status(self, state, text):
+        """Repaint the CRM dot in the connection strip. Verified state only."""
+        color = self.CRM_STATE_COLORS.get(state, TEXT_DIM)
         self._crm_dot.delete("all")
         self._crm_dot.create_oval(1, 1, 9, 9, fill=color, outline="")
         self._crm_status_label.configure(text=text, fg=color)
@@ -1555,16 +1567,23 @@ class PortfolioMakerApp:
             self._crm_hint_var.set(
                 f"{len(missions)} open mission(s) in the CRM. Pick one to prefill "
                 "this job and report progress back automatically.")
-            self._set_crm_status(GREEN, f"CRM · {len(missions)} open")
+            self._set_crm_status("ok", f"CRM · {len(missions)} open")
         else:
+            # crm_sync.fetch_open_missions() returns [] on ANY failure, so an
+            # empty list does NOT prove the CRM was reached. Do not claim green.
             self._crm_hint_var.set(
-                "CRM reachable, but no open missions (intake/scheduled/captured/"
-                "uploaded). Manual mode.")
-            self._set_crm_status(GREEN, "CRM · no open missions")
+                "No open missions returned (intake/scheduled/captured/uploaded). "
+                "This also looks identical to a failed CRM request — check the "
+                "log if you expected missions. Manual mode.")
+            self._set_crm_status("unknown", "CRM · no missions returned")
         # Keep the current selection valid
         if self.crm_mission_var.get() not in choices:
             self.crm_mission_var.set(CRM_MANUAL_CHOICE)
             self._crm_job = None
+            # The chip is the always-visible claim about which job this is.
+            # Dropping the link without repainting it leaves the header
+            # asserting a mission the app is no longer attached to.
+            self._set_mission_chip("Practice / Portfolio", linked=False)
 
     def _on_crm_refresh(self):
         self._crm_hint_var.set("Refreshing CRM missions…")
@@ -1830,6 +1849,14 @@ class PortfolioMakerApp:
 
     def _set_running(self, running):
         self._running = running
+        if running and hasattr(self, "_pages"):
+            # Every long path — scan, process, portfolio, client sort, deliver —
+            # writes its progress bar, streaming log, stat badges and action row
+            # to the Process step. Before the stepper all of that was in one
+            # scroll and always on screen; the Scan button in particular now
+            # lives on Pre-Flight, so without this the operator presses it and
+            # watches a page that never changes. Follow the work.
+            self._show_step("process")
         state = "disabled" if running else "normal"
         self.scan_btn.configure(state=state)
         if hasattr(self, 'process_btn'):
