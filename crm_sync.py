@@ -86,6 +86,12 @@ PRESET_TO_JOB_TYPE = {
     "forestry_chm": "property_survey",
     "corridor_mapping": "property_survey",
     "scene_reconstruction": "structures",
+    # Church/pavement lines (report-system-spec-v1 §5.2 and §5.5). Unlike the
+    # block above these DO have dedicated presets in odm_presets.py, so they
+    # map to themselves rather than to a nearest neighbour.
+    "pavement": "pavement",
+    "steeple": "steeple",
+    "church_campus": "church_campus",
     "video": None,
     "wildlife_census_thermal": None,
 }
@@ -164,6 +170,10 @@ class CrmMission:
     template_name: str = ""
     pilot_notes: str = ""
     admin_notes: str = ""
+    # Whether flight tracks + KML ship to this client. Photo points always
+    # do. Defaults True so a missing column or an older CRM behaves exactly
+    # as before — the gate is opt-in per job, set in the CRM.
+    deliver_flight_tracks: bool = True
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -207,6 +217,10 @@ def _parse_mission(row):
         template_name=template.get("display_name") or "",
         pilot_notes=row.get("pilot_notes") or "",
         admin_notes=row.get("admin_notes") or "",
+        # Explicit `is not False` rather than truthiness: a missing key
+        # (older CRM, or the column not selected) must mean "deliver", the
+        # long-standing behaviour — only an explicit false withholds.
+        deliver_flight_tracks=row.get("deliver_flight_tracks") is not False,
         raw=row,
     )
 
@@ -220,7 +234,7 @@ def fetch_open_missions(timeout=REQUEST_TIMEOUT):
     params = {
         "select": ("id,job_number,property_address,property_city,property_state,"
                    "site_address,property_type,status,scheduled_date,scheduled_time,"
-                   "pilot_notes,admin_notes,"
+                   "pilot_notes,admin_notes,deliver_flight_tracks,"
                    "clients(name,company),"
                    "processing_templates(preset_name,path_code,display_name)"),
         "status": f"in.({','.join(OPEN_STATUSES)})",
@@ -354,6 +368,9 @@ REPORT_TEMPLATE_CODES = {
     "structures": "structures_inspection",
     "vegetation": "vegetation_analysis",
     "real_estate": "re_aerial_photography",
+    "pavement": "pavement_pci",
+    "steeple": "steeple_inspection",
+    "church_campus": "church_campus_survey",
 }
 
 
@@ -589,6 +606,20 @@ def build_report_payload(mission, result, template_name):
         }],
         "total_photos": rd.get("total_photos", 0),
     }
+    # Ground sample distance rides in the existing flight_data section — no
+    # new section key, no template change, no CRM schema migration. Emitted
+    # ONLY when a value exists; an absent key is the honest form of "not
+    # measured". Delivered raster outranks predicted-from-EXIF.
+    achieved = rd.get("gsd_achieved")
+    predicted = rd.get("gsd_predicted")
+    if achieved and achieved.get("gsd_cm"):
+        section_data["flight_data"]["gsd_cm"] = round(achieved["gsd_cm"], 2)
+        section_data["flight_data"]["gsd_basis"] = "delivered_orthophoto"
+    elif predicted and predicted.get("sufficient"):
+        section_data["flight_data"]["gsd_cm"] = round(predicted["median_cm"], 2)
+        section_data["flight_data"]["gsd_basis"] = "predicted_from_exif"
+        section_data["flight_data"]["gsd_uncertainty_pct"] = predicted.get("uncertainty_pct")
+        section_data["flight_data"]["gsd_frames_measured"] = predicted.get("measured")
 
     findings = _build_findings(job_type, ai)
     if findings:

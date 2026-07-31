@@ -1,15 +1,17 @@
 """Tests for odm_presets job type definitions."""
 
 import pytest
-from odm_presets import PRESETS, get_preset, JOB_TYPES
+from odm_presets import PRESETS, get_preset, JOB_TYPES, delivers_gis
 
 
 class TestPresets:
-    def test_all_eight_job_types_exist(self):
+    def test_all_job_types_exist(self):
         expected = {
             "construction_progress", "property_survey", "roof_inspection",
             "structures", "vegetation", "real_estate", "gaussian_splat",
             "panorama",
+            # report-system-spec-v1 §5.2 / §5.5 lines, added 2026-07-30
+            "pavement", "steeple", "church_campus",
         }
         assert set(PRESETS.keys()) == expected
 
@@ -160,16 +162,36 @@ class TestJobTypes:
 
 
 class TestGisPolicy:
-    """GIS delivery policy locked 2026-07-12: survey, construction, and
-    vegetation deliver GIS exports to the client; everything else keeps
-    them internal (_gis/, skipped by drive_delivery)."""
+    """GIS delivery policy (Adam, 2026-07-30): GIS exports are part of ANY
+    mission that produces an orthomosaic. Supersedes the 2026-07-12 flag
+    that named only survey, construction and vegetation — under which
+    roof_inspection, structures and real_estate shipped an orthophoto but
+    routed their GIS to the internal _gis/ that drive_delivery skips."""
 
-    GIS_DELIVERED = {"property_survey", "construction_progress", "vegetation"}
+    GIS_DELIVERED = {
+        "property_survey", "construction_progress", "vegetation",
+        "roof_inspection", "structures", "real_estate",
+        "pavement", "steeple", "church_campus",
+    }
+    # The only two presets with no orthomosaic to pair GIS with.
+    NO_ORTHO = {"gaussian_splat", "panorama"}
 
-    def test_gis_delivery_job_types(self):
-        for key in PRESETS:
+    def test_gis_delivered_for_every_orthomosaic_preset(self):
+        for key, preset in PRESETS.items():
             expected = key in self.GIS_DELIVERED
-            assert bool(PRESETS[key].get("gis_delivery")) is expected, key
+            assert delivers_gis(preset) is expected, key
+
+    def test_gis_policy_covers_every_preset(self):
+        """A new preset must land in exactly one bucket, so adding one
+        cannot silently inherit the wrong delivery behaviour."""
+        assert self.GIS_DELIVERED | self.NO_ORTHO == set(PRESETS)
+        assert not (self.GIS_DELIVERED & self.NO_ORTHO)
+
+    def test_no_stale_hand_kept_flag(self):
+        """delivers_gis() is the single source of truth. A resurrected
+        gis_delivery key would be read by nothing and silently diverge."""
+        for key, preset in PRESETS.items():
+            assert "gis_delivery" not in preset, key
 
     def test_vegetation_analysis_only_on_vegetation(self):
         for key in PRESETS:

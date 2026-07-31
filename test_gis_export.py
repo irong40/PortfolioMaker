@@ -165,3 +165,43 @@ class TestExportMissionGis:
         written = export_mission_gis([PhotoMeta(filename="x", path="x")],
                                      tmp_path / "nosrc", tmp_path / "gis")
         assert written == {}
+
+
+class TestFlightTrackGate:
+    """drone_jobs.deliver_flight_tracks — withholding operational detail
+    (approach path, altitudes, pass count) without withholding the photo
+    points that prove the site was fully covered."""
+
+    def _src_with_track(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        write_srt(src / "DJI_0001.SRT",
+                  [(36.75 + i * 1e-4, -76.25) for i in range(60)])
+        return src
+
+    def test_points_only_withholds_tracks_and_kml(self, tmp_path):
+        out = tmp_path / "gis"
+        written = export_mission_gis(
+            [make_photo()], self._src_with_track(tmp_path), out,
+            site_name="Test", include_tracks=False)
+        assert set(written) == {"photo_points.geojson", "photo_points.csv"}
+        # The KML embeds the track lines, so withholding the GeoJSON while
+        # shipping the KML would leak exactly what the gate prevents.
+        assert not (out / "mission.kml").exists()
+        assert not (out / "flight_tracks.geojson").exists()
+
+    def test_tracks_only_for_the_internal_archive(self, tmp_path):
+        out = tmp_path / "_gis"
+        written = export_mission_gis(
+            [make_photo()], self._src_with_track(tmp_path), out,
+            site_name="Test", include_points=False)
+        assert set(written) == {"flight_tracks.geojson", "mission.kml"}
+        assert not (out / "photo_points.geojson").exists()
+
+    def test_default_still_writes_everything(self, tmp_path):
+        """The gate is opt-in: an unset flag must not change behaviour."""
+        written = export_mission_gis(
+            [make_photo()], self._src_with_track(tmp_path), tmp_path / "gis",
+            site_name="Test")
+        assert set(written) == {"photo_points.geojson", "photo_points.csv",
+                                "flight_tracks.geojson", "mission.kml"}

@@ -5,7 +5,13 @@ Maps job types to NodeODM processing options, photo filters,
 download targets, and report templates.
 
 Hardware target: i7-14700F, RTX 5070 12GB, 32GB RAM
-Camera: DJI M4E Wide (mechanical shutter, ~2.2 cm/px GSD at 200ft ACL)
+Camera: DJI M4E Wide (mechanical shutter)
+
+GSD is NOT a property of a preset or a platform. It depends on the altitude
+flown and the capture mode used, both of which change per flight, so it is
+measured per photo by gsd.py rather than declared here. A nominal figure in
+this file was wrong by ~2x for one of the two capture modes the Mini 4 Pro
+actually shoots. See gsd.summarize_photos().
 
 Each preset is tuned for its specific deliverable and use case.
 See SOP-002A for flight altitude / overlap guidance.
@@ -23,6 +29,9 @@ JOB_TYPES = [
     ("real_estate", "Real Estate / Marketing"),
     ("gaussian_splat", "Gaussian Splat"),
     ("panorama", "Panorama / 360"),
+    ("pavement", "Parking Lot / Pavement"),
+    ("steeple", "Steeple / Spire"),
+    ("church_campus", "Church Campus"),
 ]
 
 # Engines that run entirely on this machine. Every other engine value means
@@ -33,6 +42,24 @@ LOCAL_ENGINES = ("mipmap", "local")
 def engine_requires_nodeodm(engine):
     """Return whether a processing engine needs the NodeODM service."""
     return engine not in LOCAL_ENGINES
+
+
+def delivers_gis(preset):
+    """Whether GIS exports go to the client, derived from the orthomosaic.
+
+    Policy (Adam, 2026-07-30): GIS exports — photo points and flight
+    tracks — are part of ANY mission that produces an orthomosaic. If the
+    client is getting a georeferenced raster they can open in QGIS, they
+    get the sidecars that make it useful.
+
+    This supersedes the hand-kept `gis_delivery` flag locked 2026-07-12,
+    which listed only survey, construction and vegetation. That flag had
+    drifted: roof_inspection, structures and real_estate all ship an
+    orthophoto and were silently routing their GIS exports to the
+    internal _gis/ directory, which drive_delivery skips. Deriving it
+    from `downloads` means a new preset cannot forget to opt in.
+    """
+    return any("orthophoto" in target for target in preset.get("downloads", ()))
 
 # ── Shared option blocks ────────────────────────────────────────────────────
 
@@ -81,7 +108,6 @@ PRESETS = {
         "downloads": ["orthophoto.tif", "dsm.tif"],
         "report_type": "construction_progress",
         # GIS exports (photo points, tracks, KML) go in the client delivery
-        "gis_delivery": True,
     },
 
     # ── Property Survey ──────────────────────────────────────────────────
@@ -113,7 +139,6 @@ PRESETS = {
         ] + _OUTPUT_OPTS + _SPLIT_MERGE,
         "downloads": ["orthophoto.tif", "dsm.tif", "dtm.tif", "georeferenced_model.laz"],
         "report_type": "property_survey",
-        "gis_delivery": True,
     },
 
     # ── Roof Inspection ──────────────────────────────────────────────────
@@ -209,7 +234,6 @@ PRESETS = {
         "report_type": "vegetation",
         # Post-ODM headless QGIS VARI analysis (vegetation_analysis.py)
         "vegetation_analysis": True,
-        "gis_delivery": True,
     },
 
     # ── Real Estate / Marketing ──────────────────────────────────────────
@@ -290,6 +314,124 @@ PRESETS = {
         "downloads": [],
         "report_type": "panorama",
     },
+
+    # ── Parking Lot / Pavement ────────────────────────────────────────────
+    # ASTM D6433. The orthomosaic IS the deliverable here: sample units are
+    # measured off it, so resolution beats every other consideration and
+    # orthophoto-resolution 1 is not negotiable. Flown as two nadir passes
+    # per SOP-002B (wide grid, then medium-tele detail), so photo_filter
+    # stays nadir and both passes land in the same reconstruction.
+    # crop 0 because curbs, entrances and lot edges are in scope — an
+    # auto-cropped ortho loses exactly the distresses at the boundary.
+    # DSM retained for ponding and rutting, which read as depressions.
+    # sfm-algorithm: triangulation, correct for flat nadir-only grids.
+    "pavement": {
+        "label": "Parking Lot / Pavement",
+        "description": "High-resolution orthomosaic for ASTM D6433 distress inventory",
+        "photo_filter": "nadir",
+        "min_photos": 30,
+        "odm_options": [
+            {"name": "dsm", "value": True},
+            {"name": "orthophoto-resolution", "value": 1},
+            {"name": "dem-resolution", "value": 2},
+            {"name": "pc-quality", "value": "high"},
+            {"name": "feature-quality", "value": "ultra"},
+            {"name": "min-num-features", "value": 16000},
+            {"name": "crop", "value": 0},
+            {"name": "auto-boundary", "value": True},
+            {"name": "orthophoto-cutline", "value": True},
+            {"name": "sfm-algorithm", "value": "triangulation"},
+            {"name": "gps-accuracy", "value": 0.02},
+            {"name": "pc-las", "value": True},
+        ] + _OUTPUT_OPTS + _SPLIT_MERGE,
+        "downloads": ["orthophoto.tif", "dsm.tif", "georeferenced_model.laz"],
+        "report_type": "pavement",
+    },
+
+    # ── Steeple / Spire ───────────────────────────────────────────────────
+    # A steeple job is a roof job plus the six added zones in
+    # report-system-spec-v1 §5.5. Capture is the roof sequence followed by
+    # two overlapping orbit rings and one close oblique per zone, so the set
+    # is oblique-heavy and sky-removal is mandatory — a spire is shot almost
+    # entirely against sky. use-3dmesh for the vertical geometry.
+    # min_photos 60: roof grid + two rings + six zone close-ups cannot come
+    # in under that, and a short set means a missing zone, which is a re-fly.
+    #
+    # The spec's second deliverable is the splat viewer link. That is a
+    # SEPARATE gaussian_splat run over the same photos, not a second engine
+    # here — photogrammetry mangles finials and crockets, which is the whole
+    # reason the splat exists. Run steeple for the report evidence, then
+    # gaussian_splat for the viewer.
+    "steeple": {
+        "label": "Steeple / Spire",
+        "description": "Roof mesh + steeple zone documentation (pair with a splat run)",
+        "photo_filter": None,
+        "min_photos": 60,
+        "odm_options": [
+            {"name": "dsm", "value": True},
+            {"name": "use-3dmesh", "value": True},
+            {"name": "mesh-octree-depth", "value": 12},
+            {"name": "mesh-size", "value": 600000},
+            {"name": "orthophoto-resolution", "value": 1},
+            {"name": "pc-quality", "value": "high"},
+            {"name": "feature-quality", "value": "ultra"},
+            {"name": "min-num-features", "value": 16000},
+            {"name": "crop", "value": 0},
+            {"name": "auto-boundary", "value": True},
+            {"name": "sky-removal", "value": True},
+            {"name": "pc-las", "value": True},
+            {"name": "gltf", "value": True},
+            {"name": "3d-tiles", "value": True},
+        ] + _OUTPUT_OPTS + _SPLIT_MERGE,
+        "downloads": [
+            "orthophoto.tif", "dsm.tif",
+            "textured_model.zip", "georeferenced_model.laz",
+        ],
+        "report_type": "steeple",
+    },
+
+    # ── Church Campus ─────────────────────────────────────────────────────
+    # The whole-campus bundle: sanctuary roof and steeple, parking lot
+    # pavement, and a grounds orthomosaic in one visit. The capture is
+    # genuinely mixed — nadir grid over grounds and lot, oblique orbits over
+    # the building — so no photo_filter, incremental SfM (the default for
+    # mixed sets), and both the ortho and the mesh matter.
+    #
+    # orthophoto-resolution 1 rather than 2 because the lot inside this
+    # bundle is still scored against D6433, and a 2 cm ortho cannot carry a
+    # low-severity crack. That makes this the most expensive preset in the
+    # file; it is a full-day deliverable, priced accordingly.
+    "church_campus": {
+        "label": "Church Campus",
+        "description": "Roof + steeple + lot + grounds — whole-campus documentation",
+        "photo_filter": None,
+        "min_photos": 80,
+        "odm_options": [
+            {"name": "dsm", "value": True},
+            {"name": "dtm", "value": True},
+            {"name": "use-3dmesh", "value": True},
+            {"name": "mesh-octree-depth", "value": 12},
+            {"name": "mesh-size", "value": 600000},
+            {"name": "orthophoto-resolution", "value": 1},
+            {"name": "dem-resolution", "value": 2},
+            {"name": "pc-quality", "value": "high"},
+            {"name": "feature-quality", "value": "ultra"},
+            {"name": "min-num-features", "value": 16000},
+            {"name": "crop", "value": 0},
+            {"name": "auto-boundary", "value": True},
+            {"name": "sky-removal", "value": True},
+            {"name": "orthophoto-cutline", "value": True},
+            {"name": "pc-classify", "value": True},
+            {"name": "pc-las", "value": True},
+            {"name": "gltf", "value": True},
+            {"name": "3d-tiles", "value": True},
+        ] + _OUTPUT_OPTS + _SPLIT_MERGE,
+        "downloads": [
+            "orthophoto.tif", "dsm.tif", "dtm.tif",
+            "textured_model.zip", "georeferenced_model.laz",
+        ],
+        "report_type": "church_campus",
+    },
 }
 
 
@@ -304,8 +446,8 @@ PLATFORM_PROFILES = {
         "label": "DJI Mini 4 Pro",
         "shutter": "electronic",       # Rolling shutter CMOS
         "has_rtk": False,               # Consumer GPS only
-        "sensor_size": "1/1.3in",
-        "gsd_200ft_cm": 2.18,           # GSD at 200ft ACL (48MP mode)
+        "sensor_size": "1/1.3in",       # marketing size — NEVER derive a
+                                        # sensor width from this string
         "odm_overrides": [
             {"name": "rolling-shutter", "value": True},
             {"name": "gps-accuracy", "value": 5},
@@ -315,8 +457,8 @@ PLATFORM_PROFILES = {
         "label": "DJI Matrice 4E",
         "shutter": "mechanical",        # Global / mechanical shutter
         "has_rtk": True,
-        "sensor_size": "1/1.3in",
-        "gsd_200ft_cm": 2.18,
+        "sensor_size": "1/1.3in",       # marketing size — the M4E wide
+                                        # measures ~17.7 mm, i.e. 4/3in
         "odm_overrides": [
             # Mechanical shutter — no rolling-shutter correction needed
             {"name": "gps-accuracy", "value": 0.02},
@@ -326,8 +468,7 @@ PLATFORM_PROFILES = {
         "label": "DJI Mavic 3 Enterprise",
         "shutter": "mechanical",        # Mechanical shutter on wide camera
         "has_rtk": True,
-        "sensor_size": "4/3in",
-        "gsd_200ft_cm": 1.25,
+        "sensor_size": "4/3in",         # marketing size — not a sensor width
         "odm_overrides": [
             {"name": "gps-accuracy", "value": 0.02},
         ],

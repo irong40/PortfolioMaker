@@ -198,6 +198,30 @@ def _render_executive_summary(elements, styles, section, ai_data):
     elements.append(Spacer(1, 12))
 
 
+def _resolution_row(data):
+    """Ranked resolution row: delivered raster > predicted > "Not measured".
+
+    A predicted number must never occupy this row when a delivered raster
+    exists. Predicted GSD is measured against barometric height above the
+    takeoff point; the delivered raster's pixel size is a property of the
+    thing the client actually received, and the two were observed to differ
+    by 14% over mature canopy.
+    """
+    achieved = data.get("gsd_achieved")
+    predicted = data.get("gsd_predicted")
+    if achieved and achieved.get("gsd_cm"):
+        return ["Orthomosaic Resolution",
+                f"{achieved['gsd_cm']:.2f} cm/pixel "
+                f"(measured from the delivered GeoTIFF)"]
+    if predicted and predicted.get("sufficient"):
+        return ["Predicted Ground Sample Distance",
+                f"{predicted['median_cm']:.2f} cm/pixel median "
+                f"(p95 {predicted['p95_cm']:.2f}, "
+                f"±{predicted['uncertainty_pct']:.0f}%) — predicted "
+                f"from flight metadata, not measured on a delivered raster"]
+    return ["Ground Sample Distance", "Not measured"]
+
+
 def _render_flight_summary(elements, styles, data):
     elements.append(Paragraph("Flight Summary", styles["SectionHeader"]))
     rows = [
@@ -219,6 +243,7 @@ def _render_flight_summary(elements, styles, data):
         rows.append(["Panorama Sets", str(len(data.get("panorama_sets", [])))])
         rows.append(["Skipped Straggler Photos",
                      str(data.get("panorama_stragglers", 0))])
+    rows.append(_resolution_row(data))
 
     table = Table(rows, colWidths=[2 * inch, 4.5 * inch])
     table.setStyle(TableStyle([
@@ -261,6 +286,35 @@ def _render_deliverables(elements, styles, data):
     elements.append(Spacer(1, 12))
 
 
+def _resolution_basis_sentence(data):
+    """Name the basis behind the resolution row, or say nothing at all.
+
+    Deliberately never uses accuracy language: this is an optical sampling
+    distance, not a positional accuracy figure, and stating it as the latter
+    would be exactly the unverified claim the measurement exists to remove.
+    """
+    achieved = data.get("gsd_achieved")
+    predicted = data.get("gsd_predicted")
+    if achieved and achieved.get("gsd_cm"):
+        base = ("Orthomosaic resolution was measured from the delivered "
+                "GeoTIFF's own geotransform.")
+    elif predicted and predicted.get("sufficient"):
+        base = ("Ground sample distance was computed per photo from the "
+                "recorded barometric altitude above the takeoff point and the "
+                "camera's own focal length and frame size, then reduced over "
+                f"{predicted['measured']} nadir photos. It is predicted from "
+                "flight metadata rather than measured on a delivered raster.")
+        if predicted.get("resolution_tier") in ("T4_overview", "T5_reconnaissance"):
+            base += (" At this sampling distance the imagery is a visual "
+                     "product and not a measurement product.")
+    else:
+        return None
+    return base + (
+        " This is an optical sampling distance and not a positional accuracy "
+        "figure; it does not support survey-grade or accuracy-checkpoint "
+        "claims, which require ground control.")
+
+
 def _render_methodology(elements, styles, data, has_ai):
     elements.append(Paragraph("Methodology", styles["SectionHeader"]))
     engine = data.get("engine", "nodeodm")
@@ -297,6 +351,9 @@ def _render_methodology(elements, styles, data, has_ai):
         f"by gimbal pitch angle (nadir: straight down; oblique: angled). {proc}",
         styles["SentinelBody"],
     ))
+    resolution_basis = _resolution_basis_sentence(data)
+    if resolution_basis:
+        elements.append(Paragraph(resolution_basis, styles["SmallGrey"]))
     if has_ai:
         elements.append(Paragraph(
             "Site observations were generated using AI-assisted photo analysis "
