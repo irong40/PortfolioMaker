@@ -12,14 +12,15 @@ import tempfile, pathlib
 import tkinter as tk
 import sortie
 
-# CRITICAL: this script calls _on_reset(), which does SETTINGS_FILE.unlink().
-# Point that at a throwaway file BEFORE building the app, or running the smoke
-# test destroys the operator's real sortie_settings.json (source folder, output
-# folder, job type, site name, threshold, NodeODM URL, client profile, window
-# geometry). The file is gitignored, so there is no recovery.
+# This script calls _on_reset(), which deletes the settings file. The app takes
+# the path as a constructor argument, so hand it a throwaway: an earlier version
+# of this harness relied on monkeypatching sortie.SETTINGS_FILE and destroyed the
+# operator's real sortie_settings.json (source folder, output folder, job type,
+# site name, threshold, NodeODM URL, client profile, window geometry). The file
+# is gitignored, so there was no recovery. The global is left alone now; assert
+# it anyway, because a future edit that drops the argument would be silent.
 _TMP_SETTINGS = pathlib.Path(tempfile.mkdtemp(prefix="sortie-smoke-")) / "sortie_settings.json"
-sortie.SETTINGS_FILE = _TMP_SETTINGS
-assert sortie.SETTINGS_FILE != pathlib.Path(r"D:\Projects\PortfolioMaker") / "sortie_settings.json"
+_REAL_SETTINGS = pathlib.Path(r"D:\Projects\PortfolioMaker") / "sortie_settings.json"
 
 fail = []
 def check(cond, msg):
@@ -28,8 +29,10 @@ def check(cond, msg):
         fail.append(msg)
 
 root = tk.Tk()
-app = sortie.PortfolioMakerApp(root)
+app = sortie.PortfolioMakerApp(root, settings_file=_TMP_SETTINGS)
 root.update_idletasks()
+assert app._settings_file == _TMP_SETTINGS, "app is not pointed at the throwaway file"
+assert app._settings_file != _REAL_SETTINGS, "app would delete the operator's settings"
 
 print("\n[1] every step page exists and is reachable")
 for key, label in sortie.STEPS:
@@ -124,6 +127,7 @@ check(app._crm_status_label.cget("text") == "CRM · 14 open", "CRM chip repaints
 check(app._mission_chip_var.get() == "SAI-SPEC-012", "mission chip repaints")
 
 print("\n[5] reset still clears everything")
+_real_before = _REAL_SETTINGS.exists()
 app._show_step("deliver")
 app._deliver_btn.pack(anchor="w", pady=(10, 0))
 root.update_idletasks()
@@ -142,6 +146,11 @@ try:
           "reset clears the stale 'Ready to deliver' path")
 except Exception as e:
     check(False, f"_on_reset raised: {e}")
+# The reason this file has a safety header. If reset ever reaches the real
+# settings file again, fail loudly here rather than after the operator notices
+# their source folder and client profile are gone.
+check(_REAL_SETTINGS.exists() == _real_before,
+      "reset left the operator's real settings file alone")
 
 print("\n[6] the app follows the work (cross-check HIGH finding)")
 # Scan lives on Pre-Flight; progress bar and live log live on Process. Without
