@@ -31,6 +31,7 @@ from photo_classifier import (
     compass_to_bearing,
 )
 from odm_presets import JOB_TYPES, get_preset, engine_requires_nodeodm
+import gsd
 from portfolio_service import (
     check_nodeodm, scan_for_job, process_job, portfolio_only, PORTFOLIO_ROOT,
 )
@@ -95,8 +96,27 @@ def scan_summary(classification, working_set, preset):
     total = working_set.total if working_set else 0
     photo_filter = preset["photo_filter"]
     if photo_filter:
-        return f"Using: {total} {photo_filter} photos ({label} preset)"
-    return f"Using: {total} photos — all ({label} preset)"
+        line = f"Using: {total} {photo_filter} photos ({label} preset)"
+    else:
+        line = f"Using: {total} photos — all ({label} preset)"
+    return line + gsd_clause(working_set)
+
+
+def gsd_clause(working_set):
+    """Measured GSD clause for the scan summary, or "" when nothing is claimable.
+
+    Computed from the WORKING SET, because that is the photo list ODM will
+    actually reconstruct. Silence is the correct output when the measurement
+    gate does not pass — a nominal value would be worse than no value.
+    """
+    photos = getattr(working_set, "photos", None) if working_set else None
+    if not photos:
+        return ""
+    summary = gsd.summarize_photos(photos)
+    if not summary.sufficient:
+        return ""
+    return (f" — {summary.median_cm:.2f} cm/px measured "
+            f"(±{summary.uncertainty_pct:.0f}%, {summary.consistency_class})")
 # ─── COLORS / STYLE ────────────────────────────────────────────────────────
 
 SENTINEL_PURPLE = "#5B2C6F"
@@ -2183,6 +2203,21 @@ class PortfolioMakerApp:
                 if result.panorama_stragglers:
                     skipped = sum(ps.photo_count for ps in result.panorama_stragglers)
                     self._log(f"  Panorama stragglers: {skipped} photos skipped")
+
+                # Measured GSD over the working set. The coverage number never
+                # travels without its reason histogram — half a DJI card is
+                # RAW, so "112 of 230" reads as a bug without the reason.
+                working_photos = getattr(self._working_set, "photos", None)
+                if working_photos:
+                    # Gate coverage on the whole scanned card — the working set
+                    # is already nadir-filtered, so it cannot see the frames
+                    # that fail (see gsd.summarize).
+                    gsd_summary = gsd.summarize_photos(
+                        working_photos,
+                        population_photos=getattr(result, "photos", None))
+                    self._log("")
+                    for line in gsd.summary_lines(gsd_summary, preset=preset):
+                        self._log(line)
                 if result.gps_bounds:
                     b = result.gps_bounds
                     lat_span = (b[1] - b[0]) * 111139

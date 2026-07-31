@@ -598,6 +598,20 @@ def build_report_payload(mission, result, template_name):
         }],
         "total_photos": rd.get("total_photos", 0),
     }
+    # Ground sample distance rides in the existing flight_data section — no
+    # new section key, no template change, no CRM schema migration. Emitted
+    # ONLY when a value exists; an absent key is the honest form of "not
+    # measured". Delivered raster outranks predicted-from-EXIF.
+    achieved = rd.get("gsd_achieved")
+    predicted = rd.get("gsd_predicted")
+    if achieved and achieved.get("gsd_cm"):
+        section_data["flight_data"]["gsd_cm"] = round(achieved["gsd_cm"], 2)
+        section_data["flight_data"]["gsd_basis"] = "delivered_orthophoto"
+    elif predicted and predicted.get("sufficient"):
+        section_data["flight_data"]["gsd_cm"] = round(predicted["median_cm"], 2)
+        section_data["flight_data"]["gsd_basis"] = "predicted_from_exif"
+        section_data["flight_data"]["gsd_uncertainty_pct"] = predicted.get("uncertainty_pct")
+        section_data["flight_data"]["gsd_frames_measured"] = predicted.get("measured")
 
     findings = _build_findings(job_type, ai)
     if findings:

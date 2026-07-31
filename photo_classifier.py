@@ -31,6 +31,8 @@ from sentinel_core.metadata import extract_gps_from_exif, extract_xmp_gimbal
 from sentinel_core.platform import detect_platform_from_file
 from sentinel_core.spatial import haversine
 
+import gsd
+
 PIPELINE_AVAILABLE = True  # sentinel-core is always installed
 
 
@@ -66,6 +68,16 @@ class PhotoMeta:
     relative_altitude: float = None
     platform: str = None
     classification: str = "unknown"  # nadir, oblique, unknown
+    # ── Measured ground sample distance (gsd.py) ────────────────────────
+    # gsd holds the full gsd.FrameGSD record; the scalars mirror the fields
+    # every consumer reads so nothing has to import gsd just to display one.
+    # All default to None so a PhotoMeta built without GSD stays valid.
+    gsd: object = None
+    gsd_cm: float = None            # NADIR frames only — the claimable number
+    gsd_status: str = None          # ok | unmeasurable | excluded
+    gsd_reason: str = None          # machine-readable reason code
+    gsd_geometry: str = None        # nadir | oblique
+    gsd_method: str = None          # sensor_table | exif_derived
 
 
 @dataclass
@@ -473,6 +485,7 @@ def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
     result.platform = platform
 
     pitches = []
+    geometries = []
 
     for i, photo_path in enumerate(photos):
         meta = PhotoMeta(filename=photo_path.name, path=str(photo_path))
@@ -491,6 +504,15 @@ def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
             meta.longitude = gps[0]
             meta.latitude = gps[1]
             meta.altitude = gps[2]
+
+        # Camera geometry for the GSD measurement. Collected here so the
+        # single PIL open rides along with the metadata pass already
+        # happening; the measurement itself needs the whole set (modal frame
+        # shape, RAW-sidecar pairing) so it runs after the loop.
+        try:
+            geometries.append(gsd.read_camera_geometry(str(photo_path)))
+        except Exception:  # pragma: no cover — read_camera_geometry is total
+            geometries.append(None)
 
         meta.platform = platform
         meta.classification = classify_pitch(meta.pitch, threshold)
@@ -514,7 +536,46 @@ def classify_photos(source_dir, threshold=-70.0, progress_callback=None):
         result.pitch_min = min(pitches)
         result.pitch_max = max(pitches)
 
+    _attach_gsd(result.photos, geometries)
+
     return result
+
+
+def _attach_gsd(metas, geometries):
+    """Measure GSD for each PhotoMeta and stamp the result onto it.
+
+    Deliberately does NOT store a mission-level summary anywhere. The number
+    that matters is a function of whichever photo list a caller holds — the
+    working set that goes to ODM is a filtered subset, and a stored summary
+    would quietly describe the wrong set. Call gsd.summarize_photos(...) on
+    the list you actually have.
+
+    Any failure degrades to gsd_status="unmeasurable"; a scan never aborts
+    because a camera wrote unusual EXIF.
+    """
+    log = logging.getLogger(__name__)
+    try:
+        modes = gsd.modal_geometry(geometries)
+        frames = []
+        for meta, geom in zip(metas, geometries):
+            try:
+                frames.append(gsd.frame_gsd(meta.path, pitch=meta.pitch,
+                                            geometry=geom, modes=modes))
+            except Exception:
+                frames.append(gsd.FrameGSD(filename=meta.filename,
+                                           path=meta.path))
+        frames = gsd.pair_raw_sidecars(frames)
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("GSD measurement failed, continuing without it: %s", exc)
+        return
+
+    for meta, frame in zip(metas, frames):
+        meta.gsd = frame
+        meta.gsd_cm = frame.gsd_cm
+        meta.gsd_status = frame.status
+        meta.gsd_reason = frame.reason
+        meta.gsd_geometry = frame.geometry
+        meta.gsd_method = frame.method
 
 
 def _resolve_collision(dest):
@@ -1403,6 +1464,10 @@ def write_manifest(result, output_path=None):
             "min": result.pitch_min,
             "max": result.pitch_max,
         },
+        # Computed on demand from the photo list this result holds, so a
+        # filtered working set and the whole card can never disagree about
+        # which one the number describes.
+        "gsd": gsd.summarize_photos(result.photos).as_dict(),
         "gps_bounds": {
             "min_lat": result.gps_bounds[0] if result.gps_bounds else None,
             "max_lat": result.gps_bounds[1] if result.gps_bounds else None,
@@ -1451,6 +1516,10 @@ def write_manifest(result, output_path=None):
                 "longitude": p.longitude,
                 "altitude": p.altitude,
                 "relative_altitude": p.relative_altitude,
+                "gsd_cm": p.gsd_cm,
+                "gsd_status": p.gsd_status,
+                "gsd_reason": p.gsd_reason,
+                "gsd_geometry": p.gsd_geometry,
             }
             for p in result.photos
         ],
@@ -1543,6 +1612,8 @@ Examples:
             log.info(f"  {Path(ps.folder).name}: {ps.photo_count} photos")
     if result.pitch_min is not None:
         log.info(f"Pitch:     {result.pitch_min:.1f} to {result.pitch_max:.1f} degrees")
+    for line in gsd.summary_lines(gsd.summarize_photos(result.photos)):
+        log.info(line)
     if result.gps_bounds:
         b = result.gps_bounds
         log.info(f"GPS area:  {b[0]:.6f},{b[2]:.6f} to {b[1]:.6f},{b[3]:.6f}")

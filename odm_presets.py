@@ -5,7 +5,13 @@ Maps job types to NodeODM processing options, photo filters,
 download targets, and report templates.
 
 Hardware target: i7-14700F, RTX 5070 12GB, 32GB RAM
-Camera: DJI M4E Wide (mechanical shutter, ~2.2 cm/px GSD at 200ft ACL)
+Camera: DJI M4E Wide (mechanical shutter)
+
+GSD is NOT a property of a preset or a platform. It depends on the altitude
+flown and the capture mode used, both of which change per flight, so it is
+measured per photo by gsd.py rather than declared here. A nominal figure in
+this file was wrong by ~2x for one of the two capture modes the Mini 4 Pro
+actually shoots. See gsd.summarize_photos().
 
 Each preset is tuned for its specific deliverable and use case.
 See SOP-002A for flight altitude / overlap guidance.
@@ -440,8 +446,8 @@ PLATFORM_PROFILES = {
         "label": "DJI Mini 4 Pro",
         "shutter": "electronic",       # Rolling shutter CMOS
         "has_rtk": False,               # Consumer GPS only
-        "sensor_size": "1/1.3in",
-        "gsd_200ft_cm": 2.18,           # GSD at 200ft ACL (48MP mode)
+        "sensor_size": "1/1.3in",       # marketing size — NEVER derive a
+                                        # sensor width from this string
         "odm_overrides": [
             {"name": "rolling-shutter", "value": True},
             {"name": "gps-accuracy", "value": 5},
@@ -451,8 +457,8 @@ PLATFORM_PROFILES = {
         "label": "DJI Matrice 4E",
         "shutter": "mechanical",        # Global / mechanical shutter
         "has_rtk": True,
-        "sensor_size": "1/1.3in",
-        "gsd_200ft_cm": 2.18,
+        "sensor_size": "1/1.3in",       # marketing size — the M4E wide
+                                        # measures ~17.7 mm, i.e. 4/3in
         "odm_overrides": [
             # Mechanical shutter — no rolling-shutter correction needed
             {"name": "gps-accuracy", "value": 0.02},
@@ -462,8 +468,7 @@ PLATFORM_PROFILES = {
         "label": "DJI Mavic 3 Enterprise",
         "shutter": "mechanical",        # Mechanical shutter on wide camera
         "has_rtk": True,
-        "sensor_size": "4/3in",
-        "gsd_200ft_cm": 1.25,
+        "sensor_size": "4/3in",         # marketing size — not a sensor width
         "odm_overrides": [
             {"name": "gps-accuracy", "value": 0.02},
         ],

@@ -18,6 +18,7 @@ from photo_classifier import (
     stitch_panoramas,
 )
 from odm_presets import get_preset, delivers_gis
+import gsd
 from mipmap_service import run_mipmap_pipeline, copy_splat_outputs, check_mipmap
 from opensplat_service import (
     run_opensplat_pipeline,
@@ -339,6 +340,26 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
 
         notify("filtered", f"{working_set.total} photos selected ({preset['label']})")
 
+    # 2b. Measured GSD over the working set — the photos ODM will actually
+    # reconstruct. Warning-only, except for the one direction that is never
+    # safe: asking ODM for finer than the capture achieved makes it emit a
+    # raster labelled with a resolution the pixels do not carry.
+    # Coverage is gated against the whole scanned card, not the working set.
+    # filter_photos has already dropped the non-nadir frames, so summarizing
+    # the working set alone makes the denominator exclude exactly the frames
+    # that would fail the gate — it reported coverage 1.000 off 14 of 101.
+    gsd_summary = gsd.summarize_photos(
+        getattr(working_set, "photos", []) or [],
+        population_photos=getattr(classification, "photos", None))
+    notify("gsd", gsd_summary.headline())
+    conflict = gsd.preset_resolution_conflict(gsd_summary, preset)
+    if conflict:
+        notify("warning", conflict)
+    if engine != "local":
+        applied, why = gsd.apply_measured_resolution(preset, gsd_summary)
+        if applied is not None:
+            notify("gsd", why)
+
     # 3. Build output dir
     date_str = datetime.now().strftime("%Y-%m-%d")
     if not output_dir:
@@ -631,6 +652,11 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             "images": images,
             "pc_results": pc_results,
             "veg_results": veg_results,
+            # Two numbers, never conflated. gsd_predicted comes from flight
+            # metadata; gsd_achieved is read off the raster the client
+            # receives. The report prefers achieved and says which it used.
+            "gsd_predicted": gsd_summary.as_dict(),
+            "gsd_achieved": gsd.achieved_gsd_from_raster(ortho_path),
         }
         report_result = generate_report(preset["report_type"], report_data, output_dir)
         if report_result is None:
@@ -774,6 +800,10 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
             "photos": photos,
             "ai_analysis": ai_analysis,
             "images": images,
+            # No raster is produced on this path, so there is nothing
+            # delivered to measure — only the predicted value, labelled.
+            "gsd_predicted": gsd.summarize_photos(photos).as_dict(),
+            "gsd_achieved": None,
         }
         report_result = generate_report(preset["report_type"], report_data, output_dir)
         if report_result is None:
