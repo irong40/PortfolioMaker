@@ -749,3 +749,71 @@ class TestSettingsPersistence:
         assert settings["source_dir"] == "/photos"
         assert settings["job_type"] == "vegetation"
         assert settings["threshold"] == "-70"  # default filled in
+
+
+# ─── Settings path is an argument, not a hidden global ────────────────────
+
+class TestSettingsPathIsInjectable:
+    """Reset deletes the settings file. On 2026-07-30 a GUI harness that
+    forgot to monkeypatch sortie.SETTINGS_FILE destroyed the operator's real
+    settings — gitignored, so unrecoverable. The path is a parameter now.
+    These tests fail if it ever goes back to being reachable only as a global.
+    """
+
+    def test_load_reads_the_path_it_is_given(self, tmp_path):
+        import sortie
+        given = tmp_path / "given.json"
+        given.write_text('{"site_name": "FromArgument"}')
+        assert sortie.load_settings(given)["site_name"] == "FromArgument"
+
+    def test_save_writes_the_path_it_is_given(self, tmp_path):
+        import sortie
+        given = tmp_path / "given.json"
+        sortie.save_settings({"site_name": "Written"}, given)
+        assert given.exists()
+        assert sortie.load_settings(given)["site_name"] == "Written"
+
+    def test_save_does_not_touch_the_module_global(self, tmp_path, monkeypatch):
+        import sortie
+        never = tmp_path / "never-written.json"
+        monkeypatch.setattr(sortie, "SETTINGS_FILE", never)
+        sortie.save_settings({"site_name": "Elsewhere"}, tmp_path / "given.json")
+        assert not never.exists()
+
+    def test_delete_removes_only_the_named_file(self, tmp_path, monkeypatch):
+        import sortie
+        doomed = tmp_path / "doomed.json"
+        doomed.write_text("{}")
+        bystander = tmp_path / "real_settings.json"
+        bystander.write_text('{"site_name": "do not touch"}')
+        monkeypatch.setattr(sortie, "SETTINGS_FILE", bystander)
+
+        sortie.PortfolioMakerApp._delete_saved_settings(doomed)
+
+        assert not doomed.exists()
+        assert bystander.exists(), "delete reached the module global"
+
+    def test_delete_tolerates_a_missing_file(self, tmp_path):
+        import sortie
+        sortie.PortfolioMakerApp._delete_saved_settings(tmp_path / "gone.json")
+
+    def test_delete_survives_a_locked_file(self, tmp_path, monkeypatch):
+        """Windows holds a lock while the operator has the file open."""
+        import sortie
+        target = tmp_path / "locked.json"
+        target.write_text("{}")
+
+        def refuse(*_args, **_kwargs):
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        sortie.PortfolioMakerApp._delete_saved_settings(target)  # must not raise
+
+    def test_ui_reset_is_reachable_without_touching_disk(self):
+        """The thirty assignments are split from the one deletion, so the
+        destructive half can be tested on its own."""
+        import inspect
+        import sortie
+        body = inspect.getsource(sortie.PortfolioMakerApp._reset_ui_to_defaults)
+        assert "unlink" not in body
+        assert "SETTINGS_FILE" not in body

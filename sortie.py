@@ -52,7 +52,7 @@ from property_highlights import render_highlights, find_matching_kml
 
 SETTINGS_FILE = SCRIPT_DIR / "sortie_settings.json"
 
-def load_settings():
+def load_settings(settings_file=None):
     """Load saved settings from disk. Returns dict with defaults for missing keys."""
     defaults = {
         "source_dir": "",
@@ -64,16 +64,16 @@ def load_settings():
         "window_geometry": "",
     }
     try:
-        with open(SETTINGS_FILE, "r") as f:
+        with open(settings_file or SETTINGS_FILE, "r") as f:
             saved = json.load(f)
         defaults.update(saved)
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     return defaults
 
-def save_settings(settings):
+def save_settings(settings, settings_file=None):
     """Save settings dict to disk."""
-    with open(SETTINGS_FILE, "w") as f:
+    with open(settings_file or SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
 
 CRM_MANUAL_CHOICE = "Manual (no CRM link)"
@@ -249,7 +249,11 @@ class StatBadge(tk.Frame):
 # ─── MAIN APPLICATION ──────────────────────────────────────────────────────
 
 class PortfolioMakerApp:
-    def __init__(self, root):
+    def __init__(self, root, settings_file=None):
+        # Every read AND both writes (save on close, delete on reset) go
+        # through this one path. A harness points it at a tempdir and the
+        # operator's real settings are out of reach for the whole session.
+        self._settings_file = Path(settings_file) if settings_file else SETTINGS_FILE
         self.root = root
         self.root.title("Sortie")
         self.root.configure(bg=BG_COLOR)
@@ -275,7 +279,7 @@ class PortfolioMakerApp:
         self._cancel_event = None
         self._crm_missions = []
         self._crm_job = None
-        self._settings = load_settings()
+        self._settings = load_settings(self._settings_file)
 
         configure_styles()
         self._build_menubar()
@@ -375,7 +379,7 @@ class PortfolioMakerApp:
     def _on_close(self):
         """Save settings and close the application."""
         try:
-            save_settings(self._gather_settings())
+            save_settings(self._gather_settings(), self._settings_file)
         except OSError:
             pass
         self.root.destroy()
@@ -1540,13 +1544,30 @@ class PortfolioMakerApp:
         ttk.Button(reset_row, text="Reset Settings",
                    command=self._on_reset, style="Secondary.TButton").pack(side="left")
 
-    def _on_reset(self):
-        """Clear saved settings and reset UI to defaults."""
+    def _on_reset(self, settings_file=None):
+        """Delete the saved settings file, then reset the UI to defaults.
+
+        Defaults to the instance's settings path, so a harness that pointed
+        the app at a tempdir stays pointed there. When the only way to aim
+        this deletion was monkeypatching the module global, forgetting once
+        destroyed the operator's real settings file. Deletion and UI reset
+        are split so the destructive half is two testable lines instead of
+        a preamble to thirty assignments.
+        """
+        target = Path(settings_file) if settings_file else self._settings_file
+        self._delete_saved_settings(target)
+        self._reset_ui_to_defaults(load_settings(target))
+
+    @staticmethod
+    def _delete_saved_settings(settings_file):
+        """Remove the settings file. Missing or locked is not an error."""
         try:
-            SETTINGS_FILE.unlink(missing_ok=True)
+            Path(settings_file).unlink(missing_ok=True)
         except OSError:
             pass
-        defaults = load_settings()
+
+    def _reset_ui_to_defaults(self, defaults):
+        """Return every widget to a just-launched state. Touches no disk."""
         self.source_var.set("")
         self.output_var.set("")
         self.job_type_var.set(defaults["job_type"])

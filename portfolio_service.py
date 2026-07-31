@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from photo_classifier import (
     classify_photos, filter_photos, export_photos, write_manifest,
-    stitch_panoramas,
+    stitch_panoramas, ClassificationResult,
 )
 from odm_presets import get_preset, delivers_gis
 import gsd
@@ -57,6 +57,59 @@ def scan_for_job(classification_result, preset):
     if photo_filter:
         return filter_photos(classification_result, classification=photo_filter)
     return classification_result
+
+
+def drop_raw_sidecars(result):
+    """Drop RAW frames that sit beside a same-named JPEG.
+
+    A DJI card writes DJI_..._D.DNG next to DJI_..._D.JPG — one capture, two
+    files. Handing both to a reconstruction engine submits every viewpoint
+    twice: it doubles upload and solve cost (a 224-file TanRd survey uploaded
+    11.3 GB where 5.6 GB was the actual coverage), and the duplicate sits at
+    zero baseline from its twin, which is the one thing structure-from-motion
+    has nothing to gain from.
+
+    gsd.py already refuses to count these twice (pair_raw_sidecars) — that
+    reasoning never reached the submission path. A RAW with no JPEG sibling
+    is KEPT: it is the only copy of that frame.
+
+    Sorting and delivery deliberately do not call this. Clients who bought
+    the RAWs still get them; this is the reconstruction set only.
+    """
+    jpeg_keys = set()
+    for p in result.photos:
+        path = Path(p.path)
+        if path.suffix.lower() not in gsd.RAW_SUFFIXES:
+            jpeg_keys.add((str(path.parent).lower(), path.stem.lower()))
+
+    kept = [p for p in result.photos
+            if not (Path(p.path).suffix.lower() in gsd.RAW_SUFFIXES
+                    and (str(Path(p.path).parent).lower(),
+                         Path(p.path).stem.lower()) in jpeg_keys)]
+
+    if len(kept) == len(result.photos):
+        return result, 0
+
+    nadir = sum(1 for p in kept if p.classification == "nadir")
+    oblique = sum(1 for p in kept if p.classification == "oblique")
+    unknown = sum(1 for p in kept if p.classification == "unknown")
+    pitches = [p.pitch for p in kept if p.pitch is not None]
+
+    return ClassificationResult(
+        source_dir=result.source_dir,
+        nadir_count=nadir,
+        oblique_count=oblique,
+        unknown_count=unknown,
+        panorama_count=result.panorama_count,
+        total=len(kept),
+        pitch_min=min(pitches) if pitches else None,
+        pitch_max=max(pitches) if pitches else None,
+        platform=result.platform,
+        photos=kept,
+        panorama_sets=result.panorama_sets,
+        threshold=result.threshold,
+        created_at=result.created_at,
+    ), len(result.photos) - len(kept)
 
 
 def _panorama_report_rows(panorama_sets):
@@ -398,6 +451,14 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
             working_set = filter_photos(working_set, bbox=bbox)
         if working_set.total == 0:
             return {"error": "No photos match filter criteria"}
+
+        # One capture, one file. A DJI card holding JPEG+DNG pairs otherwise
+        # submits every viewpoint twice — see drop_raw_sidecars. Sorting and
+        # delivery run their own scan and still ship the RAWs.
+        working_set, dropped_raw = drop_raw_sidecars(working_set)
+        if dropped_raw:
+            notify("filtered",
+                   f"{dropped_raw} RAW sidecar(s) excluded — one file per capture")
 
         notify("filtered", f"{working_set.total} photos selected ({preset['label']})")
 
