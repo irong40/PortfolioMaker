@@ -170,6 +170,10 @@ class CrmMission:
     template_name: str = ""
     pilot_notes: str = ""
     admin_notes: str = ""
+    # Whether flight tracks + KML ship to this client. Photo points always
+    # do. Defaults True so a missing column or an older CRM behaves exactly
+    # as before — the gate is opt-in per job, set in the CRM.
+    deliver_flight_tracks: bool = True
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -213,6 +217,10 @@ def _parse_mission(row):
         template_name=template.get("display_name") or "",
         pilot_notes=row.get("pilot_notes") or "",
         admin_notes=row.get("admin_notes") or "",
+        # Explicit `is not False` rather than truthiness: a missing key
+        # (older CRM, or the column not selected) must mean "deliver", the
+        # long-standing behaviour — only an explicit false withholds.
+        deliver_flight_tracks=row.get("deliver_flight_tracks") is not False,
         raw=row,
     )
 
@@ -226,7 +234,7 @@ def fetch_open_missions(timeout=REQUEST_TIMEOUT):
     params = {
         "select": ("id,job_number,property_address,property_city,property_state,"
                    "site_address,property_type,status,scheduled_date,scheduled_time,"
-                   "pilot_notes,admin_notes,"
+                   "pilot_notes,admin_notes,deliver_flight_tracks,"
                    "clients(name,company),"
                    "processing_templates(preset_name,path_code,display_name)"),
         "status": f"in.({','.join(OPEN_STATUSES)})",

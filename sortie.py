@@ -2358,6 +2358,10 @@ class PortfolioMakerApp:
                     progress_callback=progress_cb,
                     output_dir=custom_output,
                     cancel_event=cancel_event,
+                    # Manual runs (no linked mission) deliver tracks, the
+                    # long-standing behaviour. Only a CRM job can withhold.
+                    deliver_flight_tracks=(
+                        crm_job.deliver_flight_tracks if crm_job else True),
                 )
 
                 if crm_job and "error" not in result:

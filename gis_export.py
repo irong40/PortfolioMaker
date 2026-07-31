@@ -214,24 +214,44 @@ def export_mission_kml(photos, tracks, out_path, site_name="Mission"):
 
 # ─── Mission orchestrator ────────────────────────────────────────────────────
 
-def export_mission_gis(photos, source_dir, out_dir, site_name="Mission"):
-    """Write every applicable GIS export into out_dir.
+def export_mission_gis(photos, source_dir, out_dir, site_name="Mission",
+                       include_points=True, include_tracks=True):
+    """Write the applicable GIS exports into out_dir.
+
+    The two groups are separable because they answer different questions
+    and carry different risk (drone_jobs.deliver_flight_tracks):
+
+      points  — photo_points.geojson/.csv. Coverage evidence: proof the
+                whole site was flown. Always safe to deliver.
+      tracks  — flight_tracks.geojson, mission.kml. Operational detail:
+                exact approach path, altitudes, pass count, time on site.
+                Withheld for corrections, classified and any site where
+                that is sensitive.
+
+    mission.kml is grouped with tracks, not points, because it embeds the
+    track lines — delivering it would leak exactly what withholding
+    flight_tracks.geojson is meant to prevent.
 
     Returns {filename: path} of files actually written (may be empty).
     """
     out = Path(out_dir)
-    tracks = load_tracks(find_srt_files(source_dir))
+    tracks = load_tracks(find_srt_files(source_dir)) if include_tracks else []
+    exports = []
+    if include_points:
+        exports += [
+            ("photo_points.geojson",
+             lambda p: export_photo_points_geojson(photos, p)),
+            ("photo_points.csv",
+             lambda p: export_photo_points_csv(photos, p)),
+        ]
+    if include_tracks:
+        exports += [
+            ("flight_tracks.geojson",
+             lambda p: export_flight_tracks_geojson(tracks, p)),
+            ("mission.kml",
+             lambda p: export_mission_kml(photos, tracks, p, site_name)),
+        ]
     written = {}
-    exports = [
-        ("photo_points.geojson",
-         lambda p: export_photo_points_geojson(photos, p)),
-        ("photo_points.csv",
-         lambda p: export_photo_points_csv(photos, p)),
-        ("flight_tracks.geojson",
-         lambda p: export_flight_tracks_geojson(tracks, p)),
-        ("mission.kml",
-         lambda p: export_mission_kml(photos, tracks, p, site_name)),
-    ]
     for name, exporter in exports:
         try:
             path = exporter(str(out / name))

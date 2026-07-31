@@ -150,6 +150,66 @@ def _process_panorama_job(classification, preset, output_dir, site_name,
     return result
 
 
+def _write_gis_exports(working_set, source_dir, output_dir, site_name, preset,
+                       deliver_flight_tracks, notify):
+    """Write GIS exports, honouring both delivery gates.
+
+    Two independent questions, deliberately not collapsed into one flag:
+
+      delivers_gis(preset)   — does this mission produce an orthomosaic?
+                               Derived, never a toggle. Decides gis/ vs
+                               _gis/ (drive_delivery skips the latter).
+      deliver_flight_tracks  — should THIS client get the operational
+                               detail? Per-job, set in the CRM.
+
+    When GIS ships but tracks are withheld, the tracks are still written
+    to _gis/ so SAI keeps its own records — they just do not go out.
+
+    Returns {filename: path} of the CLIENT-facing files only, so callers
+    can list deliverables without accidentally advertising a withheld
+    track file to the client.
+    """
+    try:
+        from gis_export import export_mission_gis
+    except ImportError:
+        log.info("gis_export not available — skipping GIS exports")
+        return {}
+
+    gis_delivered = delivers_gis(preset)
+    tracks_delivered = gis_delivered and deliver_flight_tracks
+    out_root = Path(output_dir)
+
+    try:
+        where = "client delivery" if gis_delivered else "internal"
+        detail = "photo points, flight tracks" if tracks_delivered else "photo points"
+        notify("gis", f"Writing GIS exports ({detail}) [{where}]")
+
+        gis_files = export_mission_gis(
+            working_set.photos, source_dir,
+            str(out_root / ("gis" if gis_delivered else "_gis")),
+            site_name=site_name,
+            include_points=True,
+            include_tracks=tracks_delivered or not gis_delivered,
+        )
+
+        # Withheld tracks: archive internally, never returned to the caller.
+        if gis_delivered and not deliver_flight_tracks:
+            notify("gis", "Flight tracks withheld from delivery (job setting) "
+                          "— archived to _gis/")
+            export_mission_gis(
+                working_set.photos, source_dir, str(out_root / "_gis"),
+                site_name=site_name, include_points=False, include_tracks=True,
+            )
+
+        if gis_files:
+            notify("gis", f"{len(gis_files)} GIS file(s) written")
+        return gis_files if gis_delivered else {}
+    except Exception as exc:
+        log.warning("GIS exports failed: %s", exc)
+        notify("warning", "GIS exports failed — continuing without them")
+        return {}
+
+
 def build_output_dir(site_name, date_str=None, job_type=None):
     """Build the output directory path for a portfolio job.
 
@@ -285,7 +345,8 @@ def download_outputs(task_uuid, output_dir, download_list, base_url=None):
 
 def process_job(source_dir, job_type, site_name, threshold=-70.0,
                 bbox=None, base_url=None, progress_callback=None,
-                output_dir=None, cancel_event=None):
+                output_dir=None, cancel_event=None,
+                deliver_flight_tracks=True):
     """Full portfolio job: scan → filter → submit → download.
 
     This is the main entry point called by the GUI or CLI.
@@ -498,26 +559,11 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
     # 8. Write manifest
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # 8b. GIS-ready exports (photo points, flight tracks). Any preset that
-    # produces an orthomosaic delivers them to the client in gis/; the rest
-    # write to _gis/, which drive_delivery skips — SAI records only.
-    gis_files = {}
+    # 8b. GIS-ready exports — see _write_gis_exports for the two gates.
     gis_delivered = delivers_gis(preset)
-    try:
-        from gis_export import export_mission_gis
-        gis_dir = "gis" if gis_delivered else "_gis"
-        notify("gis", f"Writing GIS exports (photo points, flight tracks) "
-                      f"[{'client delivery' if gis_delivered else 'internal'}]")
-        gis_files = export_mission_gis(working_set.photos, source_dir,
-                                       str(Path(output_dir) / gis_dir),
-                                       site_name=site_name)
-        if gis_files:
-            notify("gis", f"{len(gis_files)} GIS file(s) written")
-    except ImportError:
-        log.info("gis_export not available — skipping GIS exports")
-    except Exception as exc:
-        log.warning("GIS exports failed: %s", exc)
-        notify("warning", "GIS exports failed — continuing without them")
+    gis_files = _write_gis_exports(working_set, source_dir, output_dir,
+                                   site_name, preset, deliver_flight_tracks,
+                                   notify)
 
     # 9. AI analysis + image preparation + report generation
     report_result = None
@@ -683,7 +729,8 @@ def process_job(source_dir, job_type, site_name, threshold=-70.0,
 
 
 def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
-                    bbox=None, progress_callback=None, output_dir=None):
+                    bbox=None, progress_callback=None, output_dir=None,
+                    deliver_flight_tracks=True):
     """Local sort only — no NodeODM. For portfolio photo organization.
 
     Returns:
@@ -739,26 +786,11 @@ def portfolio_only(source_dir, job_type, site_name, threshold=-70.0,
 
     write_manifest(working_set, Path(output_dir) / "manifest.json")
 
-    # GIS-ready exports — same delivery policy as process_job: an
-    # orthomosaic in the deliverables means GIS ships to the client,
-    # otherwise internal _gis/ (delivery skips)
-    gis_files = {}
+    # GIS-ready exports — same two gates as process_job.
     gis_delivered = delivers_gis(preset)
-    try:
-        from gis_export import export_mission_gis
-        gis_dir = "gis" if gis_delivered else "_gis"
-        notify("gis", f"Writing GIS exports (photo points, flight tracks) "
-                      f"[{'client delivery' if gis_delivered else 'internal'}]")
-        gis_files = export_mission_gis(working_set.photos, source_dir,
-                                       str(Path(output_dir) / gis_dir),
-                                       site_name=site_name)
-        if gis_files:
-            notify("gis", f"{len(gis_files)} GIS file(s) written")
-    except ImportError:
-        log.info("gis_export not available — skipping GIS exports")
-    except Exception as exc:
-        log.warning("GIS exports failed: %s", exc)
-        notify("warning", "GIS exports failed — continuing without them")
+    gis_files = _write_gis_exports(working_set, source_dir, output_dir,
+                                   site_name, preset, deliver_flight_tracks,
+                                   notify)
 
     # Generate report even in portfolio-only mode (with AI + images)
     report_result = None
