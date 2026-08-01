@@ -37,9 +37,12 @@ TARGET_SEG_S = 5.5
 
 # A continuous flight starts on the pad and ends back on it. Those frames score
 # high — ground rush fills the frame with motion — but they are the two shots no
-# client wants. Trimmed off each end of any clip long enough to spare it.
+# client wants. Preferred boundary is the telemetry altitude track; the fixed
+# guard below is the fallback for clips that carry no telemetry at all.
 EDGE_TRIM_S = 6.0
 MIN_SPAN_FOR_TRIM_S = 30.0
+AIRBORNE_FLOOR_M = 5.0     # rel_alt below this is taxi/pad, not a usable shot
+MIN_AIRBORNE_S = 10.0      # ignore a telemetry span too short to build from
 
 MASTER_W, MASTER_H = 3840, 2160
 FPS = 30
@@ -255,6 +258,47 @@ def best_window(samples: list[dict], clip_duration: float, win_s: float) -> tupl
     return best_window_in(samples, 0.0, clip_duration, win_s)
 
 
+def read_altitude_track(path: str, srt_path: str | None = None) -> list[float]:
+    """rel_alt per SRT record for a clip, from the sidecar or the embedded stream.
+
+    DJI writes flight telemetry twice: a sidecar .SRT and a mov_text stream
+    inside the MP4. Cards offloaded without the sidecar still carry the
+    embedded copy, so fall back to it rather than treating the clip as
+    telemetry-free.
+    """
+    text = ""
+    if srt_path and Path(srt_path).is_file():
+        text = Path(srt_path).read_text(encoding="utf-8", errors="ignore")
+    else:
+        try:
+            out = subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:s:0",
+                 "-f", "srt", "-"],
+                capture_output=True, text=True, timeout=120)
+            text = out.stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            return []
+    return [float(m) for m in re.findall(r"rel_alt:\s*(-?[\d.]+)", text)]
+
+
+def airborne_span(alts: list[float], duration: float,
+                  floor_m: float = AIRBORNE_FLOOR_M) -> tuple[float, float] | None:
+    """(start, end) of the airborne stretch, or None if telemetry can't say.
+
+    Trims the pad at both ends without guessing how long a takeoff or a
+    landing took — a clip that starts already at altitude loses nothing, and a
+    long spiral descent is cut at the point it stops being a usable shot.
+    """
+    if len(alts) < 2:
+        return None
+    step = duration / len(alts)
+    up = [i for i, a in enumerate(alts) if a >= floor_m]
+    if not up:
+        return None
+    t0, t1 = up[0] * step, min(duration, (up[-1] + 1) * step)
+    return (t0, t1) if t1 - t0 >= MIN_AIRBORNE_S else None
+
+
 def clip_span(duration: float, edge_trim: float = EDGE_TRIM_S,
               min_for_trim: float = MIN_SPAN_FOR_TRIM_S) -> tuple[float, float]:
     """Usable (start, end) inside a clip, minus the takeoff/landing guard.
@@ -332,7 +376,10 @@ def plan_reel(clips: list[dict], target_s: float,
     if not usable:
         raise ValueError(f"no clips >= {MIN_SEG_S}s to build a reel from")
 
-    spans = {c["path"]: clip_span(c["duration"]) for c in usable}
+    # Telemetry-derived airborne window when the clip carries one, else the
+    # fixed takeoff/landing guard.
+    spans = {c["path"]: (c.get("span") or clip_span(c["duration"]))
+             for c in usable}
     total_span = sum(t1 - t0 for t0, t1 in spans.values())
     # One long take can supply many segments — cap by what the footage holds,
     # not by how many files came off the card.
@@ -739,8 +786,13 @@ def render_reel(job: dict, music_track: Path | None,
             info = probe_media(clip["path"])
             clip_audio[clip["path"]] = info["has_audio"]
             samples = sample_clip(find_proxy(clip["path"]))
+            alts = read_altitude_track(clip["path"], clip.get("srt_path"))
+            span = airborne_span(alts, info["duration"])
             analyzed.append({"path": clip["path"], "duration": info["duration"],
-                             "samples": samples})
+                             "samples": samples, "span": span})
+            if span:
+                log(f"  {clip['name']}: airborne {span[0]:.0f}-{span[1]:.0f}s "
+                    f"of {info['duration']:.0f}s (telemetry)")
             color_md = clip_color_mode(clip.get("srt_path"))
             is_dlog = bool(color_md and color_md.startswith("dlog"))
             dlog_seen = dlog_seen or is_dlog

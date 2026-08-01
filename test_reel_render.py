@@ -14,6 +14,7 @@ from reel_render import (
     _address_overlay_filter,
     _kenburns_filter,
     _lut_filter,
+    airborne_span,
     allocate_segments,
     best_window,
     best_window_in,
@@ -21,6 +22,7 @@ from reel_render import (
     choose_segmentation,
     clip_color_mode,
     clip_span,
+    read_altitude_track,
     derive_cut,
     make_card,
     make_map_card,
@@ -154,6 +156,60 @@ class TestLongTakeMultiCut:
         clips = [fake_clip(f"c{i:02d}.mp4", 30.0) for i in range(11)]
         paths = [p["path"] for p in plan_reel(clips, 60.0) if p["type"] == "clip"]
         assert len(paths) == len(set(paths))
+
+
+class TestAirborneSpan:
+    """DJI_20260801105453_0002_V.MP4: 114.6s, already at 37m on frame 1, wheels
+    down at ~108s. The fixed guard trimmed 6 good seconds off the head and left
+    16s of descent on the tail; telemetry gets both ends right."""
+
+    def test_real_profile_keeps_head_cuts_landing(self):
+        # Measured shape of that flight: cruise ~37m to 66s, through 5m at 92s,
+        # wheels down ~108s. 3436 records over 114.6s.
+        alts = ([37.0] * 1980
+                + [37.0 - 32.0 * i / 778 for i in range(778)]     # 37m -> 5m
+                + [5.0 - 5.0 * i / 480 for i in range(480)]       # 5m  -> 0m
+                + [0.0] * 198)
+        span = airborne_span(alts, 114.6)
+        assert span is not None
+        assert span[0] == 0.0            # starts airborne — nothing to trim
+        assert 88.0 < span[1] < 96.0     # ~92s, not the 108.6s fixed guard
+
+    def test_takeoff_trimmed_when_present(self):
+        alts = [0.0] * 300 + [30.0] * 2700 + [0.0] * 300
+        span = airborne_span(alts, 110.0)
+        assert span is not None
+        assert span[0] > 5.0 and span[1] < 105.0
+
+    def test_no_telemetry_returns_none(self):
+        assert airborne_span([], 114.6) is None
+        assert airborne_span([1.0], 114.6) is None
+
+    def test_ground_only_clip_returns_none(self):
+        assert airborne_span([0.0] * 500, 60.0) is None
+
+    def test_too_short_airborne_returns_none(self):
+        # a ~5s hop can't carry a reel — fall back to the fixed guard
+        assert airborne_span([0.0] * 100 + [20.0] * 20 + [0.0] * 100, 60.0) is None
+
+    def test_reads_altitude_from_sidecar_srt(self, tmp_path):
+        srt = tmp_path / "clip.SRT"
+        srt.write_text(
+            "1\n00:00:00,000 --> 00:00:00,033\n"
+            "[latitude: 36.94] [longitude: -76.57] [rel_alt: 37.289 abs_alt: 6.9]\n\n"
+            "2\n00:00:00,033 --> 00:00:00,066\n"
+            "[latitude: 36.94] [longitude: -76.57] [rel_alt: -0.002 abs_alt: -30.4]\n",
+            encoding="utf-8")
+        assert read_altitude_track(str(tmp_path / "clip.MP4"), str(srt)) == \
+            [37.289, -0.002]
+
+    def test_plan_uses_span_when_supplied(self):
+        clip = fake_clip("orbit.mp4", 114.6)
+        clip["span"] = (0.0, 92.0)
+        plan = plan_reel([clip], 90.0)
+        body = [p for p in plan if p["type"] == "clip"]
+        assert max(p["start"] + p["dur"] for p in body) <= 92.0 + 1e-6
+        assert min(p["start"] for p in body) == 0.0
 
 
 class TestAllocateSegments:
