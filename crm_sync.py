@@ -358,9 +358,14 @@ def mark_failed(job_id, error):
 #
 # Missing here is a soft skip, not a failure: push_report logs and returns
 # None, mark_complete still writes status/output_path/deliverables back, and
-# the local PDF is still produced independently by report_generator. Add
-# "gaussian_splat": "<code>" / "panorama": "<code>" the same day the CRM rows
-# are created.
+# the local PDF is still produced independently by report_generator.
+#
+# Both remaining gaps closed 2026-08-01 — panorama (CRM migration
+# panorama_service_line) and gaussian_splat (gaussian_splat_report_template),
+# 14 sections each, existing enum keys only. Every odm_presets.JOB_TYPES
+# entry now has a code here, which is what
+# test_every_odm_job_type_has_a_report_template locks. A new job type must
+# arrive with its report_templates row or that test fails.
 REPORT_TEMPLATE_CODES = {
     "construction_progress": "construction_progress",
     "property_survey": "property_survey",
@@ -371,6 +376,8 @@ REPORT_TEMPLATE_CODES = {
     "pavement": "pavement_pci",
     "steeple": "steeple_inspection",
     "church_campus": "church_campus_survey",
+    "panorama": "panorama_delivery",
+    "gaussian_splat": "gaussian_splat_delivery",
 }
 
 
@@ -405,13 +412,15 @@ PLATFORM_NAMES = {
 # wrong. The old code tested `engine == "nodeodm"` for the NodeODM line, so an
 # opensplat run — which does run NodeODM for SfM before training locally —
 # would report "Sortie" alone. No such report was ever produced: push_report
-# returns early when REPORT_TEMPLATE_CODES has no entry for the job type, and
-# it has none for gaussian_splat (the only job type that yields
-# engine == "opensplat"), so build_report_payload has never been reached with
-# a non-nodeodm engine. Every engine that reaches it today is "nodeodm", for
-# which the old test and engine_requires_nodeodm() emit identical output.
-# This activates the day a gaussian_splat report_templates row plus a
-# REPORT_TEMPLATE_CODES entry exist — not before.
+# returned early while REPORT_TEMPLATE_CODES had no gaussian_splat entry (the
+# only job type that yields engine == "opensplat"), so build_report_payload
+# was never reached with a non-nodeodm engine.
+#
+# LIVE as of 2026-08-01: the gaussian_splat_delivery row and the
+# REPORT_TEMPLATE_CODES entry both exist, so opensplat runs now DO reach
+# build_report_payload and this derivation is load-bearing rather than
+# forward-looking. test_build_report_payload_credits_opensplat_and_nodeodm
+# pins the three-line credit.
 #
 # "nodeodm" and "local" map to [] deliberately (nothing to add beyond the
 # derived line / nothing at all). MipMap survives only because

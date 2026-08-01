@@ -136,6 +136,113 @@ def test_every_odm_job_type_is_reachable_from_a_crm_preset():
     assert unreachable == set(), f"job types with no CRM preset: {unreachable}"
 
 
+def test_every_odm_job_type_has_a_report_template():
+    """A job type with no REPORT_TEMPLATE_CODES entry books fine and then
+    delivers an EMPTY Reports tab — push_report bails at the lookup.
+
+    gaussian_splat shipped that way for 5 days (row 2026-07-27, template
+    2026-08-01) and panorama for its whole life. Both closed; this keeps the
+    next job type from repeating it.
+    """
+    from odm_presets import JOB_TYPES
+    from crm_sync import REPORT_TEMPLATE_CODES
+
+    missing = {code for code, _ in JOB_TYPES} - set(REPORT_TEMPLATE_CODES)
+    assert missing == set(), f"job types with no report template: {missing}"
+
+
+# ── Live catalogue checks ────────────────────────────────────────────────
+# The test above only diffs JOB_TYPES against the values of a hardcoded
+# dict, so it stays green while the CRM cannot actually dispatch a job type.
+# It did exactly that from 2026-07-30 to 2026-08-01, when 4 of 11 job types
+# were undispatchable in production: pavement/steeple/church_campus had rows
+# switched to active=false, and panorama had no row at all. A dict is not a
+# catalogue. These two hit the live table and cover the data-side half.
+#
+# Skipped without creds so the offline suite stays hermetic.
+
+def _live_active_presets():
+    """preset_name of every active processing_templates row, from the CRM."""
+    import requests
+    from crm_sync import _credentials, _headers
+
+    url, key = _credentials()
+    resp = requests.get(
+        f"{url}/rest/v1/processing_templates",
+        headers=_headers(key),
+        params={"select": "preset_name", "active": "eq.true"},
+        timeout=crm_sync.REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return {row["preset_name"] for row in resp.json()}
+
+
+live_only = pytest.mark.skipif(
+    not crm_sync.is_configured(),
+    reason="needs SUPABASE_URL + SUPABASE_SERVICE_KEY to read the live catalogue",
+)
+
+
+@live_only
+def test_live_every_active_crm_preset_is_mapped():
+    """An active preset missing from PRESET_TO_JOB_TYPE is a SILENT no-prefill.
+
+    suggested_job_type() is a plain .get(), so the GUI leaves the job-type
+    radio on whatever was selected last and the operator processes the
+    mission under the wrong preset with no warning anywhere.
+    """
+    from crm_sync import PRESET_TO_JOB_TYPE
+
+    unmapped = _live_active_presets() - set(PRESET_TO_JOB_TYPE)
+    assert unmapped == set(), f"active CRM presets with no mapping: {unmapped}"
+
+
+@live_only
+def test_live_every_report_template_code_exists():
+    """Every code in REPORT_TEMPLATE_CODES must be a live, active CRM row.
+
+    The code-side test above only proves a string is present. A code that is
+    misspelled, retired, or never created still bails push_report at the
+    fetch — same empty Reports tab, one step later.
+    """
+    import requests
+    from crm_sync import _credentials, _headers, REPORT_TEMPLATE_CODES
+
+    url, key = _credentials()
+    resp = requests.get(
+        f"{url}/rest/v1/report_templates",
+        headers=_headers(key),
+        params={"select": "code", "is_active": "eq.true"},
+        timeout=crm_sync.REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    live = {row["code"] for row in resp.json()}
+
+    dangling = set(REPORT_TEMPLATE_CODES.values()) - live
+    assert dangling == set(), f"report codes with no active CRM row: {dangling}"
+
+
+@live_only
+def test_live_every_odm_job_type_is_dispatchable():
+    """Every GUI job type must be bookable from an ACTIVE CRM preset.
+
+    Both CRM dropdowns filter active=true, so an inactive row is invisible
+    in intake even though the row exists and the mapping is correct.
+    """
+    from odm_presets import JOB_TYPES
+    from crm_sync import PRESET_TO_JOB_TYPE
+
+    reachable = {
+        PRESET_TO_JOB_TYPE[p]
+        for p in _live_active_presets()
+        if PRESET_TO_JOB_TYPE.get(p)
+    }
+    undispatchable = {code for code, _ in JOB_TYPES} - reachable
+    assert undispatchable == set(), (
+        f"job types with no active CRM preset: {undispatchable}"
+    )
+
+
 def test_suggested_site_name_is_street():
     m = _parse_mission(SAMPLE_ROW)
     assert m.suggested_site_name() == "2237 Shillelagh Rd"
@@ -368,9 +475,9 @@ def test_build_report_payload_credits_opensplat_and_nodeodm(tmp_path):
     earns BOTH lines. The old `engine == "nodeodm"` test matched neither and
     would have left the methodology section claiming Sortie alone.
 
-    Note this path is not reachable in production yet: push_report bails before
-    build_report_payload because REPORT_TEMPLATE_CODES has no gaussian_splat
-    entry. The test pins the behaviour for the day that row lands."""
+    Reachable in production since 2026-08-01: the gaussian_splat_delivery row
+    and its REPORT_TEMPLATE_CODES entry both exist, so push_report no longer
+    bails and opensplat runs really do reach build_report_payload."""
     result = _veg_result(tmp_path)
     rd = result["report_data"]
     rd["job_type"] = "gaussian_splat"
@@ -530,9 +637,12 @@ def test_resolve_template_land_does_not_hijack_other_job_types():
         "vegetation", "land") == "vegetation_analysis"
     assert crm_sync.resolve_report_template_code(
         "roof_inspection", "land") == "roof_property_inspection"
-    # Unmapped job types stay unmapped even on land parcels.
+    # Unmapped job types stay unmapped even on land parcels. Every real
+    # JOB_TYPES entry has a code since 2026-08-01, so this needs a synthetic
+    # value — the branch still matters, because a typo'd or retired job_type
+    # must fall through to None rather than pick up the land template.
     assert crm_sync.resolve_report_template_code(
-        "gaussian_splat", "land") is None
+        "not_a_real_job_type", "land") is None
 
 
 def test_push_report_land_survey_requests_land_listing_template(
@@ -597,8 +707,14 @@ def test_push_report_land_survey_non_land_keeps_survey_template(
 
 
 def test_push_report_skips_unmapped_job_type(configured, tmp_path):
+    """Fail-soft on an unknown job_type: log and return None, never raise.
+
+    Uses a synthetic value because every real JOB_TYPES entry has been mapped
+    since 2026-08-01. The guard still earns its keep — this is the path a
+    typo'd or retired job_type takes, and it must not reach the network.
+    """
     result = _veg_result(tmp_path)
-    result["report_data"]["job_type"] = "gaussian_splat"
+    result["report_data"]["job_type"] = "not_a_real_job_type"
     assert crm_sync.push_report(_mission(), result) is None
 
 
