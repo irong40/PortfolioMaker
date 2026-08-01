@@ -14,10 +14,13 @@ from reel_render import (
     _address_overlay_filter,
     _kenburns_filter,
     _lut_filter,
+    allocate_segments,
     best_window,
+    best_window_in,
     build_assembly_cmd,
     choose_segmentation,
     clip_color_mode,
+    clip_span,
     derive_cut,
     make_card,
     make_map_card,
@@ -111,6 +114,65 @@ class TestPlanReel:
     def test_all_too_short_raises(self):
         with pytest.raises(ValueError, match="no clips"):
             plan_reel([fake_clip("tiny.mp4", 1.0)], 45.0)
+
+
+class TestLongTakeMultiCut:
+    """Regression: job 20260801_173537_testpano turned a 114.6s orbit into a
+    14s reel whose entire body was one 8s chunk starting at t=90 (the landing).
+    A single long take has to be cut, not trimmed."""
+
+    def test_single_long_clip_fills_target_with_many_cuts(self):
+        plan = plan_reel([fake_clip("orbit.mp4", 114.6)], 90.0)
+        body = [p for p in plan if p["type"] == "clip"]
+        assert len(body) > 10                     # was 1
+        assert plan_duration(plan) == pytest.approx(90.0, abs=0.01)
+
+    def test_cuts_do_not_overlap(self):
+        plan = plan_reel([fake_clip("orbit.mp4", 114.6)], 90.0)
+        body = [p for p in plan if p["type"] == "clip"]
+        for a, b in zip(body, body[1:]):
+            assert a["start"] + a["dur"] <= b["start"] + 1e-6
+
+    def test_cuts_spread_across_the_flight(self):
+        plan = plan_reel([fake_clip("orbit.mp4", 114.6)], 90.0)
+        body = [p for p in plan if p["type"] == "clip"]
+        assert body[0]["start"] < 20.0            # opens early in the flight
+        assert body[-1]["start"] > 80.0           # and still runs late
+
+    def test_takeoff_and_landing_excluded(self):
+        plan = plan_reel([fake_clip("orbit.mp4", 114.6)], 90.0)
+        body = [p for p in plan if p["type"] == "clip"]
+        assert min(p["start"] for p in body) >= 6.0
+        assert max(p["start"] + p["dur"] for p in body) <= 114.6 - 6.0 + 1e-6
+
+    def test_short_clip_keeps_full_span(self):
+        assert clip_span(20.0) == (0.0, 20.0)     # too short to spare the trim
+        assert clip_span(114.6) == (6.0, 108.6)
+
+    def test_many_clips_still_take_one_window_each(self):
+        # The fireworks path must not change: 11 clips, 11 segments, no repeats.
+        clips = [fake_clip(f"c{i:02d}.mp4", 30.0) for i in range(11)]
+        paths = [p["path"] for p in plan_reel(clips, 60.0) if p["type"] == "clip"]
+        assert len(paths) == len(set(paths))
+
+
+class TestAllocateSegments:
+    def test_splits_proportional_to_span(self):
+        spans = {"long.mp4": (0.0, 90.0), "short.mp4": (0.0, 30.0)}
+        counts = allocate_segments(spans, 8, 5.0)
+        assert sum(counts.values()) == 8
+        assert counts["long.mp4"] > counts["short.mp4"]
+
+    def test_capped_so_windows_cannot_overlap(self):
+        # 20s of footage at 5s segments holds 4 windows, however many are asked for
+        counts = allocate_segments({"only.mp4": (0.0, 20.0)}, 12, 5.0)
+        assert counts["only.mp4"] == 4
+
+    def test_best_window_in_respects_bounds(self):
+        samples = [{"t": t * 1.0, "motion": 0.5 if t > 50 else 0.01,
+                    "brightness": 0.4} for t in range(60)]
+        start, _ = best_window_in(samples, 10.0, 40.0, 5.0)
+        assert 10.0 <= start <= 35.0             # never leaves the bucket
 
 
 class TestWindowScoring:

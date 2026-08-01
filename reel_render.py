@@ -35,6 +35,12 @@ MIN_SEG_S = 2.5
 MAX_SEG_S = 8.0
 TARGET_SEG_S = 5.5
 
+# A continuous flight starts on the pad and ends back on it. Those frames score
+# high — ground rush fills the frame with motion — but they are the two shots no
+# client wants. Trimmed off each end of any clip long enough to spare it.
+EDGE_TRIM_S = 6.0
+MIN_SPAN_FOR_TRIM_S = 30.0
+
 MASTER_W, MASTER_H = 3840, 2160
 FPS = 30
 
@@ -223,22 +229,63 @@ def window_score(samples: list[dict]) -> float:
     return motion * exposure_w
 
 
-def best_window(samples: list[dict], clip_duration: float, win_s: float) -> tuple[float, float]:
-    """Best (start, score) window of win_s seconds. Centered fallback if unsampled."""
-    if clip_duration <= win_s:
-        return 0.0, window_score(samples)
-    if not samples:
-        return max(0.0, (clip_duration - win_s) / 2), 0.0
-    best_start, best = 0.0, -1.0
+def best_window_in(samples: list[dict], t0: float, t1: float,
+                   win_s: float) -> tuple[float, float]:
+    """Best (start, score) window of win_s seconds inside [t0, t1]."""
+    if t1 - t0 <= win_s:
+        return t0, window_score([s for s in samples if t0 <= s["t"] < t1])
+    best_start, best = t0, -1.0
     stride = max(0.5, win_s / 4)
-    start = 0.0
-    while start + win_s <= clip_duration + 1e-6:
+    start = t0
+    while start + win_s <= t1 + 1e-6:
         in_win = [s for s in samples if start <= s["t"] < start + win_s]
         score = window_score(in_win)
         if score > best:
             best_start, best = start, score
         start += stride
     return best_start, best
+
+
+def best_window(samples: list[dict], clip_duration: float, win_s: float) -> tuple[float, float]:
+    """Best (start, score) window of win_s seconds. Centered fallback if unsampled."""
+    if clip_duration <= win_s:
+        return 0.0, window_score(samples)
+    if not samples:
+        return max(0.0, (clip_duration - win_s) / 2), 0.0
+    return best_window_in(samples, 0.0, clip_duration, win_s)
+
+
+def clip_span(duration: float, edge_trim: float = EDGE_TRIM_S,
+              min_for_trim: float = MIN_SPAN_FOR_TRIM_S) -> tuple[float, float]:
+    """Usable (start, end) inside a clip, minus the takeoff/landing guard.
+
+    Short establishing clips are used whole — only a clip long enough to be a
+    full flight leg can spare the trim.
+    """
+    if duration < min_for_trim:
+        return 0.0, duration
+    return edge_trim, duration - edge_trim
+
+
+def allocate_segments(spans: dict[str, tuple[float, float]], n: int,
+                      seg: float) -> dict[str, int]:
+    """Split n body segments across clips, proportional to usable span.
+
+    Capped per clip at the number of non-overlapping seg-length windows that
+    fit, so one long take never yields duplicate footage. Largest-remainder
+    distribution keeps the total at n where capacity allows.
+    """
+    lengths = {p: t1 - t0 for p, (t0, t1) in spans.items()}
+    total = sum(lengths.values()) or 1.0
+    caps = {p: max(1, int(lengths[p] // seg)) for p in spans}
+    ideal = {p: n * lengths[p] / total for p in spans}
+    counts = {p: min(caps[p], int(ideal[p])) for p in spans}
+    while sum(counts.values()) < n:
+        room = [p for p in spans if counts[p] < caps[p]]
+        if not room:
+            break                      # footage can't fill the target; run short
+        counts[max(room, key=lambda q: ideal[q] - counts[q])] += 1
+    return counts
 
 
 # ─── Edit planning ───────────────────────────────────────────────────────────
@@ -284,18 +331,50 @@ def plan_reel(clips: list[dict], target_s: float,
     usable = [c for c in clips if c["duration"] >= MIN_SEG_S]
     if not usable:
         raise ValueError(f"no clips >= {MIN_SEG_S}s to build a reel from")
+
+    spans = {c["path"]: clip_span(c["duration"]) for c in usable}
+    total_span = sum(t1 - t0 for t0, t1 in spans.values())
+    # One long take can supply many segments — cap by what the footage holds,
+    # not by how many files came off the card.
+    max_segments = max(len(usable), int(total_span // MIN_SEG_S))
     n, seg = choose_segmentation(
-        target_s, len(usable),
+        target_s, max_segments,
         extra_cards_s=MAP_S if map_card else 0.0,
         extra_cards=1 if map_card else 0)
 
-    scored = []
-    for c in usable:
-        win = min(seg, c["duration"])
-        start, score = best_window(c["samples"], c["duration"], win)
-        scored.append({"path": c["path"], "start": start, "dur": win, "score": score})
-    picked = sorted(scored, key=lambda s: s["score"], reverse=True)[:n]
-    picked.sort(key=lambda s: s["path"])  # back to chronological order
+    picked = []
+    if n <= len(usable):
+        # Enough separate clips to carry the reel: one window each, best win.
+        scored = []
+        for c in usable:
+            t0, t1 = spans[c["path"]]
+            win = min(seg, t1 - t0)
+            start, score = best_window_in(c["samples"], t0, t1, win)
+            scored.append({"path": c["path"], "start": start, "dur": win,
+                           "score": score})
+        picked = sorted(scored, key=lambda s: s["score"], reverse=True)[:n]
+    else:
+        # Fewer clips than segments — a single long orbit is the common case.
+        # Cut several windows out of each, one per equal bucket, so the reel
+        # is an edit across the whole flight instead of one continuous take.
+        counts = allocate_segments(spans, n, seg)
+        for c in usable:
+            t0, t1 = spans[c["path"]]
+            k = counts[c["path"]]
+            bucket = (t1 - t0) / k if k else 0.0
+            for j in range(k):
+                b0 = t0 + j * bucket
+                win = min(seg, t1 - b0)
+                if win < MIN_SEG_S:
+                    break
+                # Search the bucket, but let the window run past its end when
+                # the bucket is tighter than a segment — never past the clip.
+                hi = min(t1, b0 + max(bucket, win))
+                start, score = best_window_in(c["samples"], b0, hi, win)
+                picked.append({"path": c["path"], "start": start, "dur": win,
+                               "score": score})
+
+    picked.sort(key=lambda s: (s["path"], s["start"]))  # chronological order
 
     plan = [{"type": "card", "card": "intro", "dur": INTRO_S}]
     plan += [{"type": "clip", "path": p["path"], "start": p["start"], "dur": p["dur"]}
