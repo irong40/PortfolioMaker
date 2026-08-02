@@ -281,16 +281,36 @@ def read_altitude_track(path: str, srt_path: str | None = None) -> list[float]:
     return [float(m) for m in re.findall(r"rel_alt:\s*(-?[\d.]+)", text)]
 
 
+def resolve_airborne_floor(spec: dict | None, peak_m: float) -> float:
+    """Altitude floor in metres for this package, given the clip's peak.
+
+    {"peak_frac": f} scales to the height the mission was actually flown at;
+    {"meters": m} pins it. Never drops below AIRBORNE_FLOOR_M, so no package
+    setting can pull pad footage back into a reel.
+    """
+    if not spec:
+        return AIRBORNE_FLOOR_M
+    if spec.get("meters") is not None:
+        return max(AIRBORNE_FLOOR_M, float(spec["meters"]))
+    if spec.get("peak_frac") is not None:
+        return max(AIRBORNE_FLOOR_M, float(spec["peak_frac"]) * peak_m)
+    return AIRBORNE_FLOOR_M
+
+
 def airborne_span(alts: list[float], duration: float,
-                  floor_m: float = AIRBORNE_FLOOR_M) -> tuple[float, float] | None:
+                  floor_m: float | None = None,
+                  floor_spec: dict | None = None) -> tuple[float, float] | None:
     """(start, end) of the airborne stretch, or None if telemetry can't say.
 
     Trims the pad at both ends without guessing how long a takeoff or a
     landing took — a clip that starts already at altitude loses nothing, and a
     long spiral descent is cut at the point it stops being a usable shot.
+    floor_spec is the package's airborne_floor; floor_m overrides it outright.
     """
     if len(alts) < 2:
         return None
+    if floor_m is None:
+        floor_m = resolve_airborne_floor(floor_spec, max(alts))
     step = duration / len(alts)
     up = [i for i, a in enumerate(alts) if a >= floor_m]
     if not up:
@@ -363,15 +383,32 @@ def choose_segmentation(target_s: float, n_clips: int,
     return best[1], best[2]
 
 
-def plan_reel(clips: list[dict], target_s: float,
-              map_card: bool = False) -> list[dict]:
-    """Build the edit plan from analyzed clips.
+def even_spread(items: list, k: int) -> list:
+    """k items spread evenly across the list, keeping order."""
+    if k >= len(items):
+        return list(items)
+    if k <= 1:
+        return list(items[:k])
+    idxs = sorted({round(i * (len(items) - 1) / (k - 1)) for i in range(k)})
+    return [items[j] for j in idxs]
 
-    clips: [{path, duration, samples}] — chronological (DJI filenames sort so).
-    Returns plan items: {type: card|clip, dur, ...}; clip items carry path/start.
-    map_card inserts a flight-path map card before the outro (MAP_S seconds),
-    absorbed into the segmentation so the timeline still hits target_s.
+
+def plan_reel(clips: list[dict], target_s: float,
+              map_card: bool = False,
+              stills: list[str] | None = None) -> list[dict]:
+    """Build the edit plan from analyzed clips, topped up with stills.
+
+    clips: [{path, duration, samples, span?}] — chronological (DJI filenames
+    sort so). Returns plan items: {type: card|clip|photo, dur, ...}; clip items
+    carry path/start. map_card inserts a flight-path map card before the outro
+    (MAP_S seconds), absorbed into the segmentation so the timeline still hits
+    target_s.
+
+    When the footage can't fill the target — a short flight, or an altitude
+    floor that trims the descent — the shortfall is covered by Ken Burns
+    stills after the video body rather than delivering a reel that runs short.
     """
+    stills = sorted(stills or [])
     usable = [c for c in clips if c["duration"] >= MIN_SEG_S]
     if not usable:
         raise ValueError(f"no clips >= {MIN_SEG_S}s to build a reel from")
@@ -382,15 +419,33 @@ def plan_reel(clips: list[dict], target_s: float,
              for c in usable}
     total_span = sum(t1 - t0 for t0, t1 in spans.values())
     # One long take can supply many segments — cap by what the footage holds,
-    # not by how many files came off the card.
-    max_segments = max(len(usable), int(total_span // MIN_SEG_S))
-    n, seg = choose_segmentation(
-        target_s, max_segments,
-        extra_cards_s=MAP_S if map_card else 0.0,
-        extra_cards=1 if map_card else 0)
+    # not by how many files came off the card. Stills extend that ceiling.
+    cap = max(len(usable), int(total_span // MIN_SEG_S)) + len(stills)
+
+    # How many segments the footage holds depends on the segment length, which
+    # depends on how many segments there are. Seed with the MIN_SEG_S ceiling
+    # and settle: an over-estimate makes the reel run short of target.
+    n = n_video = n_photo = 0
+    seg = TARGET_SEG_S
+    for _ in range(4):
+        n, seg = choose_segmentation(
+            target_s, cap,
+            extra_cards_s=MAP_S if map_card else 0.0,
+            extra_cards=1 if map_card else 0)
+        # Video leads; stills only cover what the footage cannot.
+        if n <= len(usable):
+            n_video = n
+        else:
+            n_video = min(n, sum(max(1, int((t1 - t0) // seg))
+                                 for t0, t1 in spans.values()))
+        n_photo = max(0, min(len(stills), n - n_video))
+        real = n_video + n_photo
+        if real >= n or real >= cap:
+            break
+        cap = real
 
     picked = []
-    if n <= len(usable):
+    if n_video <= len(usable):
         # Enough separate clips to carry the reel: one window each, best win.
         scored = []
         for c in usable:
@@ -399,12 +454,12 @@ def plan_reel(clips: list[dict], target_s: float,
             start, score = best_window_in(c["samples"], t0, t1, win)
             scored.append({"path": c["path"], "start": start, "dur": win,
                            "score": score})
-        picked = sorted(scored, key=lambda s: s["score"], reverse=True)[:n]
+        picked = sorted(scored, key=lambda s: s["score"], reverse=True)[:n_video]
     else:
         # Fewer clips than segments — a single long orbit is the common case.
         # Cut several windows out of each, one per equal bucket, so the reel
         # is an edit across the whole flight instead of one continuous take.
-        counts = allocate_segments(spans, n, seg)
+        counts = allocate_segments(spans, n_video, seg)
         for c in usable:
             t0, t1 = spans[c["path"]]
             k = counts[c["path"]]
@@ -426,6 +481,9 @@ def plan_reel(clips: list[dict], target_s: float,
     plan = [{"type": "card", "card": "intro", "dur": INTRO_S}]
     plan += [{"type": "clip", "path": p["path"], "start": p["start"], "dur": p["dur"]}
              for p in picked]
+    # Stills close out the body — the footage is the hero, these cover the gap.
+    plan += [{"type": "photo", "path": s, "dur": seg}
+             for s in even_spread(stills, n_photo)]
     if map_card:
         plan.append({"type": "card", "card": "map", "dur": MAP_S})
     plan.append({"type": "card", "card": "outro", "dur": OUTRO_S})
@@ -447,11 +505,7 @@ def plan_photo_reel(stills: list[str], target_s: float,
         target_s, len(stills),
         extra_cards_s=MAP_S if map_card else 0.0,
         extra_cards=1 if map_card else 0)
-    if n < len(stills) and n > 1:
-        idxs = sorted({round(i * (len(stills) - 1) / (n - 1)) for i in range(n)})
-        picked = [stills[j] for j in idxs]
-    else:
-        picked = stills[:n]
+    picked = even_spread(stills, n)
 
     plan = [{"type": "card", "card": "intro", "dur": INTRO_S}]
     plan += [{"type": "photo", "path": p, "dur": seg} for p in picked]
@@ -778,6 +832,7 @@ def render_reel(job: dict, music_track: Path | None,
     work.mkdir(parents=True, exist_ok=True)
 
     analyzed, clip_audio, clip_luts = [], {}, {}
+    floor_spec = job["render"].get("airborne_floor")
     if clips_in:
         lut = resolve_lut(job)
         log(f"Analyzing {len(clips_in)} clips...")
@@ -787,12 +842,13 @@ def render_reel(job: dict, music_track: Path | None,
             clip_audio[clip["path"]] = info["has_audio"]
             samples = sample_clip(find_proxy(clip["path"]))
             alts = read_altitude_track(clip["path"], clip.get("srt_path"))
-            span = airborne_span(alts, info["duration"])
+            span = airborne_span(alts, info["duration"], floor_spec=floor_spec)
             analyzed.append({"path": clip["path"], "duration": info["duration"],
                              "samples": samples, "span": span})
             if span:
                 log(f"  {clip['name']}: airborne {span[0]:.0f}-{span[1]:.0f}s "
-                    f"of {info['duration']:.0f}s (telemetry)")
+                    f"of {info['duration']:.0f}s (telemetry, floor "
+                    f"{resolve_airborne_floor(floor_spec, max(alts)):.1f}m)")
             color_md = clip_color_mode(clip.get("srt_path"))
             is_dlog = bool(color_md and color_md.startswith("dlog"))
             dlog_seen = dlog_seen or is_dlog
@@ -821,7 +877,12 @@ def render_reel(job: dict, music_track: Path | None,
 
     target = float(job["render"]["duration_s"])
     if clips_in:
-        plan = plan_reel(analyzed, target, map_card=bool(map_png))
+        plan = plan_reel(analyzed, target, map_card=bool(map_png),
+                         stills=stills_in)
+        n_fill = sum(1 for p in plan if p["type"] == "photo")
+        if n_fill:
+            log(f"Footage short of {target:.0f}s — {n_fill} still(s) "
+                f"filling the tail")
     else:
         log(f"Photos-only job — Ken Burns reel from {len(stills_in)} stills")
         plan = plan_photo_reel(stills_in, target, map_card=bool(map_png))

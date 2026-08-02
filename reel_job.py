@@ -33,13 +33,25 @@ MUSIC_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a"}
 # ─── Package presets (template decisions locked 2026-07-05) ──────────────────
 # Durations: 45/60/90 by tier. Moods: calm=Lite, upbeat=Pro and up,
 # corporate=Construction/Inspection. Address overlay + agent card: ALL packages.
+# airborne_floor: where the renderer stops using footage as the aircraft
+# descends. {"peak_frac": f} is f x that clip's own peak altitude, so it adapts
+# to the height the mission was flown at; {"meters": m} is absolute. Marketing
+# packages want cruise altitude only — the spiral down is dead air. Inspection
+# descends deliberately and those low detail shots ARE the deliverable, so it
+# keeps an absolute floor just high enough to drop the pad.
 PACKAGE_PRESETS = {
-    "listing_lite":         {"duration_s": 45, "music_mood": "calm"},
-    "listing_pro":          {"duration_s": 60, "music_mood": "upbeat"},
-    "luxury":               {"duration_s": 90, "music_mood": "upbeat"},
-    "commercial_marketing": {"duration_s": 90, "music_mood": "upbeat"},
-    "construction":         {"duration_s": 60, "music_mood": "corporate"},
-    "inspection":           {"duration_s": 60, "music_mood": "corporate"},
+    "listing_lite":         {"duration_s": 45, "music_mood": "calm",
+                             "airborne_floor": {"peak_frac": 0.60}},
+    "listing_pro":          {"duration_s": 60, "music_mood": "upbeat",
+                             "airborne_floor": {"peak_frac": 0.60}},
+    "luxury":               {"duration_s": 90, "music_mood": "upbeat",
+                             "airborne_floor": {"peak_frac": 0.60}},
+    "commercial_marketing": {"duration_s": 90, "music_mood": "upbeat",
+                             "airborne_floor": {"peak_frac": 0.60}},
+    "construction":         {"duration_s": 60, "music_mood": "corporate",
+                             "airborne_floor": {"peak_frac": 0.25}},
+    "inspection":           {"duration_s": 60, "music_mood": "corporate",
+                             "airborne_floor": {"meters": 5.0}},
 }
 
 DELIVERABLES = ("master_4k", "web_1080p", "vertical_916")
@@ -108,6 +120,7 @@ def build_reel_job(
             # Flight-path/location map card; renderer skips it gracefully
             # when the job carries no SRT telemetry or KML boundary.
             "map_card": True,
+            "airborne_floor": preset["airborne_floor"],
         },
     }
 

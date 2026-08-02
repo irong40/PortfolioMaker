@@ -255,3 +255,28 @@ class TestLogMusicUsage:
     def test_none_track_logs_native_audio(self, tmp_path):
         path = log_music_usage(make_job(), None, tmp_path)
         assert "native-audio" in path.read_text().strip().splitlines()[1]
+
+
+class TestPackageAirborneFloor:
+    """Marketing packages cut the descent; inspection keeps it — those low
+    detail shots are the deliverable, not dead air."""
+
+    def test_every_package_declares_a_floor(self):
+        for name, preset in PACKAGE_PRESETS.items():
+            spec = preset.get("airborne_floor")
+            assert spec, f"{name} has no airborne_floor"
+            assert ("meters" in spec) ^ ("peak_frac" in spec), \
+                f"{name} must set exactly one of meters/peak_frac"
+
+    def test_marketing_packages_trim_to_cruise(self):
+        for name in ("listing_lite", "listing_pro", "luxury",
+                     "commercial_marketing"):
+            assert PACKAGE_PRESETS[name]["airborne_floor"] == {"peak_frac": 0.60}
+
+    def test_inspection_keeps_low_passes(self):
+        assert PACKAGE_PRESETS["inspection"]["airborne_floor"] == {"meters": 5.0}
+
+    def test_job_carries_the_floor_into_render(self):
+        job = build_reel_job(package="commercial_marketing", site="X",
+                             source_dir="F:/DCIM", clips=[{"path": "a.mp4"}])
+        assert job["render"]["airborne_floor"] == {"peak_frac": 0.60}

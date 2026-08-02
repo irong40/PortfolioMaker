@@ -23,6 +23,7 @@ from reel_render import (
     clip_color_mode,
     clip_span,
     read_altitude_track,
+    resolve_airborne_floor,
     derive_cut,
     make_card,
     make_map_card,
@@ -210,6 +211,75 @@ class TestAirborneSpan:
         body = [p for p in plan if p["type"] == "clip"]
         assert max(p["start"] + p["dur"] for p in body) <= 92.0 + 1e-6
         assert min(p["start"] for p in body) == 0.0
+
+
+class TestStillsFillShortfall:
+    """A short flight — or an altitude floor that trims the descent — leaves the
+    footage unable to reach the package duration. Stills cover the gap instead
+    of shipping a reel that runs short."""
+
+    def test_short_footage_topped_up_with_stills(self):
+        clip = fake_clip("orbit.mp4", 20.0)          # ~20s of usable footage
+        stills = [f"DJI_{i:04d}.JPG" for i in range(12)]
+        plan = plan_reel([clip], 90.0, stills=stills)
+        assert plan_duration(plan) == pytest.approx(90.0, abs=0.01)
+        assert any(p["type"] == "photo" for p in plan)
+        assert any(p["type"] == "clip" for p in plan)
+
+    def test_no_stills_used_when_footage_covers_target(self):
+        clip = fake_clip("orbit.mp4", 114.6)
+        stills = [f"DJI_{i:04d}.JPG" for i in range(12)]
+        plan = plan_reel([clip], 90.0, stills=stills)
+        assert not any(p["type"] == "photo" for p in plan)
+
+    def test_video_leads_stills_close(self):
+        clip = fake_clip("orbit.mp4", 20.0)
+        plan = plan_reel([clip], 90.0, stills=[f"p{i}.JPG" for i in range(12)])
+        body = [p for p in plan if p["type"] in ("clip", "photo")]
+        kinds = [p["type"] for p in body]
+        assert kinds == sorted(kinds, key=lambda k: 0 if k == "clip" else 1)
+
+    def test_stills_deduped_to_available_count(self):
+        clip = fake_clip("orbit.mp4", 20.0)
+        plan = plan_reel([clip], 90.0, stills=["a.JPG", "b.JPG"])
+        photos = [p["path"] for p in plan if p["type"] == "photo"]
+        assert len(photos) == len(set(photos)) <= 2
+
+    def test_absent_stills_behaves_as_before(self):
+        plan = plan_reel([fake_clip("orbit.mp4", 114.6)], 90.0)
+        assert all(p["type"] != "photo" for p in plan)
+
+
+class TestPackageAltitudeFloor:
+    def test_peak_frac_scales_to_mission_altitude(self):
+        assert resolve_airborne_floor({"peak_frac": 0.60}, 41.7) == \
+            pytest.approx(25.02)
+        assert resolve_airborne_floor({"peak_frac": 0.60}, 120.0) == \
+            pytest.approx(72.0)
+
+    def test_absolute_meters_pins_the_floor(self):
+        assert resolve_airborne_floor({"meters": 5.0}, 120.0) == 5.0
+
+    def test_never_below_the_pad_guard(self):
+        # no package setting may pull pad footage back in
+        assert resolve_airborne_floor({"peak_frac": 0.01}, 40.0) == 5.0
+        assert resolve_airborne_floor({"meters": 0.0}, 40.0) == 5.0
+
+    def test_missing_spec_falls_back_to_default(self):
+        assert resolve_airborne_floor(None, 41.7) == 5.0
+        assert resolve_airborne_floor({}, 41.7) == 5.0
+
+    def test_marketing_floor_cuts_descent_earlier_than_default(self):
+        # measured profile: peak 41.7m, 5m floor cuts at ~92s, 60% at ~82s
+        alts = ([37.0] * 1980
+                + [37.0 - 32.0 * i / 778 for i in range(778)]
+                + [5.0 - 5.0 * i / 480 for i in range(480)]
+                + [0.0] * 198)
+        loose = airborne_span(alts, 114.6, floor_spec={"meters": 5.0})
+        tight = airborne_span(alts, 114.6, floor_spec={"peak_frac": 0.60})
+        assert tight is not None and loose is not None
+        assert tight[1] < loose[1]
+        assert 78.0 < tight[1] < 88.0
 
 
 class TestAllocateSegments:
