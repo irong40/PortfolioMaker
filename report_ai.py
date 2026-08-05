@@ -9,7 +9,6 @@ Falls back gracefully if no API key, no network, or API errors.
 
 import os
 import logging
-import base64
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -29,8 +28,27 @@ def _get_api_key():
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
 
+#: Pinned deliberately. The previous value, ``gemini-2.0-flash``, was retired by
+#: Google and every call 404s. Because this path had never run here -- no
+#: GEMINI_API_KEY was in this project's .env until 2026-08-05 -- nothing caught
+#: it. ``list_models`` still advertises retired models, so an availability check
+#: passes while ``generateContent`` fails; only a live call tells the truth.
+#:
+#: Pinned rather than ``gemini-flash-latest`` so a report generated next quarter
+#: matches one generated today. That trade means this WILL go stale: when it
+#: does, the symptom is a 404 naming this constant.
+#:
+#: Verified by live generateContent 2026-08-05.
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+
+
 def _encode_image(path, max_size=1024):
-    """Read and resize image for API submission. Returns (base64_str, mime_type)."""
+    """Read and resize an image for API submission. Returns (bytes, mime_type).
+
+    google-genai takes raw bytes via ``types.Part.from_bytes``; the old
+    ``google-generativeai`` SDK wanted base64 in an ``inline_data`` dict.
+    Returning bytes drops a needless encode/decode round trip on every photo.
+    """
     from PIL import Image
     import io
 
@@ -43,8 +61,7 @@ def _encode_image(path, max_size=1024):
 
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=80)
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return b64, "image/jpeg"
+    return buf.getvalue(), "image/jpeg"
 
 
 # ─── PROMPT TEMPLATES PER JOB TYPE ────────────────────────────────────────
@@ -158,16 +175,17 @@ def analyze_photos(photos, job_type, site_name="Site", max_photos=None):
         return None
 
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
     except ImportError:
-        log.warning("google-generativeai not installed — skipping AI analysis")
+        log.warning("google-genai not installed — skipping AI analysis")
         return None
 
     try:
         import json
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        client = genai.Client(api_key=api_key)
+        model_name = DEFAULT_GEMINI_MODEL
 
         # Build system prompt from template
         system_prompt = _BASE_SYSTEM_PROMPT.format(
@@ -175,35 +193,46 @@ def analyze_photos(photos, job_type, site_name="Site", max_photos=None):
             schema=json.dumps(template.ai_schema, indent=2),
         )
 
-        # Build multimodal content
-        parts = []
-        parts.append(f"Site: {site_name}\n\n{template.ai_prompt}\n\n"
-                      f"I'm sending {len(selected)} representative aerial photos.")
+        # Build multimodal content. The system prompt moves out of the parts
+        # list into system_instruction, which is where google-genai wants it;
+        # the old SDK had no such field so it was prepended as plain text.
+        parts = [types.Part.from_text(
+            text=f"Site: {site_name}\n\n{template.ai_prompt}\n\n"
+                 f"I'm sending {len(selected)} representative aerial photos.")]
 
         for i, photo in enumerate(selected):
-            b64, mime = _encode_image(photo.path)
-            parts.append({
-                "inline_data": {
-                    "mime_type": mime,
-                    "data": b64,
-                }
-            })
+            data, mime = _encode_image(photo.path)
+            parts.append(types.Part.from_bytes(data=data, mime_type=mime))
             meta_line = f"Photo {i+1}: {photo.classification}"
             if photo.pitch is not None:
-                meta_line += f", pitch={photo.pitch:.1f}\u00b0"
+                meta_line += f", pitch={photo.pitch:.1f}°"
             if photo.altitude is not None:
                 meta_line += f", alt={photo.altitude:.0f}m"
-            parts.append(meta_line)
+            parts.append(types.Part.from_text(text=meta_line))
 
-        response = model.generate_content(
-            [system_prompt] + parts,
-            generation_config=genai.GenerationConfig(
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[types.Content(role="user", parts=parts)],
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
                 response_mime_type="application/json",
                 temperature=0.3,
             ),
         )
 
-        result = json.loads(response.text)
+
+        # google-genai types .text as optional: a safety block or an empty
+        # candidate list yields None, and json.loads(None) would raise inside
+        # the generic handler below, logging a TypeError instead of the actual
+        # cause. Name it.
+        raw = response.text
+        if not raw:
+            log.warning("AI analysis returned no text (model=%s, feedback=%s)"
+                        " — falling back", model_name,
+                        getattr(response, "prompt_feedback", None))
+            return None
+
+        result = json.loads(raw)
 
         # Attach which photos were analyzed
         result["selected_photos"] = selected
