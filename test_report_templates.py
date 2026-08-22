@@ -100,12 +100,17 @@ class TestTemplateUniqueness:
         assert "invasive_species" in keys
         assert "decline_indicators" in keys
 
-    def test_survey_has_boundary_sections(self):
+    def test_survey_has_site_documentation_sections(self):
         t = get_template("property_survey")
         keys = {s.key for s in t.sections}
-        assert "boundaries" in keys
-        assert "encroachments" in keys
+        assert "site_features" in keys
+        assert "perimeter_observations" in keys
         assert "terrain_analysis" in keys
+        # Va. Code 54.1-402(C): this template must not carry land-surveying
+        # sections. Renaming these back reintroduces the exposure.
+        assert "boundaries" not in keys
+        assert "encroachments" not in keys
+        assert t.title == "Aerial Site Documentation Report"
 
     def test_real_estate_has_marketing_sections(self):
         t = get_template("real_estate")

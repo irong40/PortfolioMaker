@@ -90,8 +90,9 @@ CONSTRUCTION_PROGRESS = ReportTemplate(
             title="Construction Phase Assessment",
             ai_field="construction_phase",
             fallback_text=(
-                "Construction phase assessment requires AI analysis. Configure a "
-                "Gemini API key to enable automated phase detection from aerial imagery."
+                "Construction phase assessment was not produced for this "
+                "document. The orthomosaic and imagery are provided; phase "
+                "assessment is available on request."
             ),
         ),
         ReportSection(
@@ -137,7 +138,7 @@ CONSTRUCTION_PROGRESS = ReportTemplate(
             fallback_text=(
                 "Review aerial imagery for: erosion control measures (silt fence, "
                 "inlet protection), safety fencing, barricades, and equipment safety zones. "
-                "AI analysis can automate this checklist — configure a Gemini API key."
+                "An itemised checklist is available on request."
             ),
         ),
         ReportSection(key="photo_grid", title="Site Photography", include_images=True),
@@ -153,26 +154,38 @@ CONSTRUCTION_PROGRESS = ReportTemplate(
 
 PROPERTY_SURVEY = ReportTemplate(
     report_type="property_survey",
-    title="Property Survey Report",
+    # NOT a survey. SAI is not licensed to practice land surveying in Virginia,
+    # and a deliverable titled "Property Survey Report" says otherwise on its
+    # cover. Registry key is unchanged; only what prints has changed.
+    title="Aerial Site Documentation Report",
     photo_strategy="nadir_heavy",
     max_ai_photos=6,
     ai_system_addendum=(
-        "You specialize in aerial property survey documentation. "
-        "Focus on boundary identification, terrain analysis, and encroachment detection."
+        "You specialize in aerial site documentation. Describe only what is "
+        "visible in the imagery. Never identify, infer, or locate a property "
+        "line, parcel boundary, easement, or right-of-way, never state that a "
+        "feature crosses one, and never give a distance or dimension relating "
+        "any structure to a boundary. Those are the practice of land surveying."
     ),
     ai_prompt=(
-        "Analyze these aerial property survey photos. Assess:\n"
-        "1. BOUNDARIES: fences, walls, hedges, property line markers\n"
-        "2. ENCROACHMENTS: structures or features crossing apparent boundaries\n"
-        "3. TERRAIN: slopes, drainage patterns, low areas, flood risk indicators\n"
-        "4. STRUCTURES: buildings, sheds, pools, driveways with estimated dimensions\n"
-        "5. EASEMENTS: utility corridors, access paths, right-of-way indicators\n"
+        "Analyze these aerial site photos. Describe only what is visible:\n"
+        "1. SITE FEATURES: fences, walls, hedges, tree lines, and other linear "
+        "features, described by what they are and where they run. Do not call "
+        "any of them a property line or boundary.\n"
+        "2. PERIMETER OBSERVATIONS: condition of the site edge, dumping, "
+        "erosion, vehicle tracks, gaps in fencing. Do not state or imply that "
+        "anything crosses a boundary.\n"
+        "3. TERRAIN: slopes, drainage patterns, low areas, standing water\n"
+        "4. STRUCTURES: buildings, sheds, pools, driveways. Describe type, "
+        "location and condition. Do not estimate dimensions.\n"
+        "5. ACCESS AND CORRIDORS: visible drives, paths, and utility corridors, "
+        "described as visible features only, never as easements or rights-of-way.\n"
         "6. VEGETATION: tree canopy, cleared areas, landscaping"
     ),
     ai_schema={
         "executive_summary": "str",
-        "boundaries": {"description": "str", "features": ["str"]},
-        "encroachments": [{"item": "str", "location": "str", "severity": "str"}],
+        "site_features": {"description": "str", "features": ["str"]},
+        "perimeter_observations": [{"item": "str", "location": "str", "severity": "str"}],
         "terrain_analysis": {"description": "str", "features": ["str"]},
         "structures_inventory": [{"type": "str", "location": "str", "condition": "str"}],
         "easements": ["str"],
@@ -187,24 +200,27 @@ PROPERTY_SURVEY = ReportTemplate(
         ReportSection(key="flight_summary", title="Flight Summary"),
         ReportSection(key="ortho_preview", title="Property Orthomosaic", include_images=True),
         ReportSection(
-            key="boundaries",
-            title="Boundary Analysis",
-            ai_field="boundaries",
+            key="site_features",
+            title="Visible Site Features",
+            ai_field="site_features",
             fallback_text=(
-                "Property boundaries, fences, walls, and hedges are visible in the "
-                "orthomosaic. Use GIS software to overlay parcel data and measure "
-                "boundary features against recorded plat dimensions."
+                "Fences, walls, hedges, and tree lines are visible in the "
+                "orthomosaic and are recorded here as observed features. Their "
+                "relationship to any property line is not determined and is not "
+                "implied. Determining a boundary requires a survey by a land "
+                "surveyor licensed in the Commonwealth of Virginia."
             ),
         ),
         ReportSection(
-            key="encroachments",
-            title="Encroachment Assessment",
-            ai_field="encroachments",
+            key="perimeter_observations",
+            title="Perimeter Observations",
+            ai_field="perimeter_observations",
             table_format="findings",
             fallback_text=(
-                "Review the orthomosaic for structures, fences, or landscaping that "
-                "may cross property boundaries. AI analysis can automate encroachment "
-                "detection — configure a Gemini API key."
+                "Conditions observed along the site edge, such as dumping, "
+                "erosion, vehicle tracks, or gaps in fencing, are recorded here. "
+                "Whether any feature crosses a property line is a boundary "
+                "question and is outside the scope of this document."
             ),
         ),
         ReportSection(
@@ -227,9 +243,9 @@ PROPERTY_SURVEY = ReportTemplate(
             ai_field="structures_inventory",
             table_format="findings",
             fallback_text=(
-                "All visible structures are captured in the orthomosaic and 3D model. "
-                "Measurements can be extracted from the point cloud for area and "
-                "setback calculations."
+                "All visible structures are captured in the orthomosaic and 3D model "
+                "and are inventoried here by type, location, and visible condition. "
+                "Setback and boundary-relative measurements are not provided."
             ),
         ),
         ReportSection(
