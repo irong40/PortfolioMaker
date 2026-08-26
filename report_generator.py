@@ -31,8 +31,13 @@ except ImportError:
 from report_templates import get_template, TEMPLATES
 
 # ─── SENTINEL AERIAL BRAND ───────────────────────────────────────────────
-# Primary: Safety Orange #FF6B35 | Background: Deep Black #050505
-# Fonts: Saira Condensed (headings), Share Tech Mono (body)
+# Cover palette is sampled from the crest itself (gold/bronze), per Adam's
+# decision 2026-08-04. The safety-orange accents below remain for interior
+# section headers, where the crest is not present to clash with them.
+#
+# ⚠️ Two oranges exist across the two report systems and they do not match:
+# this file used #FF6B35, SAI-Report-Template.html uses #f97316. Unify before
+# the HTML and PDF paths are ever seen side by side by one client.
 
 if REPORTLAB_AVAILABLE:
     SAI_ORANGE = HexColor("#FF6B35")
@@ -42,6 +47,23 @@ if REPORTLAB_AVAILABLE:
     SAI_LIGHT = HexColor("#FFF3ED")
     SAI_ORANGE_LIGHT = HexColor("#FF8F66")
     LIGHT_GREY = HexColor("#D3D3D3")
+
+    # Cover palette — light. The page is left white and nothing paints a
+    # background, so the cover costs almost no toner and cannot suffer the
+    # white-frame artefact a full-bleed dark page gets on any office printer.
+    #
+    # ⚠️ The gold here is the BRONZE end of the crest ramp, not the light
+    # gold. #D0B060 measures 2.09:1 on white and fails WCAG AA outright.
+    # #907030 measures 4.62:1 and passes, and holds 4.81:1 after greyscale
+    # conversion on a mono printer. Do not swap it for the lighter gold.
+    COVER_INK = HexColor("#0D1117")       # template --text-primary
+    COVER_SUB = HexColor("#374151")       # template --text-secondary
+    COVER_MUTED = HexColor("#6B7280")     # template --text-muted
+    COVER_GOLD = HexColor("#907030")      # crest bronze
+    COVER_GOLD_DIM = HexColor("#907030")
+    COVER_CELL_BG = HexColor("#F7F8FA")   # template --surface
+    COVER_RULE = HexColor("#E2E6EC")      # template --border
+    COVER_BADGE_BG = HexColor("#FBF7EC")
     SEVERITY_COLORS = {
         "major": HexColor("#C0392B"),
         "moderate": HexColor("#E67E22"),
@@ -54,7 +76,10 @@ if REPORTLAB_AVAILABLE:
         "warning": HexColor("#E67E22"),
     }
 
-# Logo path — search common locations
+# Logo path — bundled copy first, sibling repos only as legacy fallback.
+# The bundled copy is what makes this survive a PyInstaller build and a moved
+# sibling checkout. If none resolve we warn loudly rather than silently
+# shipping a client-facing cover with no logo on it.
 LOGO_PATH = None
 for candidate in [
     Path(__file__).parent / "assets" / "sentinel-logo.png",
@@ -64,6 +89,54 @@ for candidate in [
     if candidate.exists():
         LOGO_PATH = str(candidate)
         break
+if LOGO_PATH is None:
+    logging.getLogger(__name__).warning(
+        "sentinel-logo.png not found in assets/ or the legacy sibling-repo "
+        "paths — report covers will render without the crest."
+    )
+
+
+# ─── BRAND FONTS ─────────────────────────────────────────────────────────
+# Registered from assets/fonts if present, else every style falls back to
+# Helvetica. Falling back is not an error; it just is not on brand, so it is
+# logged once at import.
+
+FONT_DISPLAY = "Helvetica-Bold"
+FONT_DISPLAY_REG = "Helvetica"
+FONT_MONO = "Courier"
+BRAND_FONTS_OK = False
+
+if REPORTLAB_AVAILABLE:
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        _fdir = Path(__file__).parent / "assets" / "fonts"
+        _faces = {
+            "SairaCondensed": _fdir / "SairaCondensed-Regular.ttf",
+            "SairaCondensed-Bold": _fdir / "SairaCondensed-Bold.ttf",
+            "ShareTechMono": _fdir / "ShareTechMono-Regular.ttf",
+        }
+        if all(p.exists() for p in _faces.values()):
+            for _name, _p in _faces.items():
+                pdfmetrics.registerFont(TTFont(_name, str(_p)))
+            pdfmetrics.registerFontFamily(
+                "SairaCondensed", normal="SairaCondensed",
+                bold="SairaCondensed-Bold",
+                italic="SairaCondensed", boldItalic="SairaCondensed-Bold",
+            )
+            FONT_DISPLAY = "SairaCondensed-Bold"
+            FONT_DISPLAY_REG = "SairaCondensed"
+            FONT_MONO = "ShareTechMono"
+            BRAND_FONTS_OK = True
+        else:
+            logging.getLogger(__name__).warning(
+                "Brand fonts missing from assets/fonts — falling back to "
+                "Helvetica. Expected SairaCondensed-Regular.ttf, "
+                "SairaCondensed-Bold.ttf, ShareTechMono-Regular.ttf."
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Font registration failed: {e}")
 
 FOOTER_TEXT = (
     "Sentinel Aerial Inspections  |  FAA Part 107 Certified  |  "
@@ -140,39 +213,242 @@ def _footer(canvas_obj, doc):
 # ─── SECTION RENDERERS ───────────────────────────────────────────────────
 # Each renderer handles a specific section key or falls through to generic.
 
-def _render_cover(elements, styles, data, template):
-    PAGE_W, PAGE_H = letter
-    cover_table = Table(
-        [[Paragraph("SENTINEL AERIAL INSPECTIONS", styles["CoverSubtitle"])],
-         [Paragraph(template.title, styles["CoverTitle"])],
-         [Paragraph(data.get("site_name", "Site"), styles["CoverSubtitle"])],
-         [Paragraph(data.get("date", ""), styles["CoverSubtitle"])]],
-        colWidths=[PAGE_W - 1.5 * inch],
-        rowHeights=[30, 50, 30, 25],
-    )
-    cover_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), SAI_BLACK),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("LEFTPADDING", (0, 0), (-1, -1), 20),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 20),
-    ]))
-    elements.append(Spacer(1, 1.5 * inch))
-    elements.append(cover_table)
-    elements.append(Spacer(1, 0.75 * inch))
+# ─── COVER ───────────────────────────────────────────────────────────────
+# Structure is specified by report-system-spec-v1.md "Cover identity block"
+# and mirrors SAI-Report-Template.html, which is the version already in
+# service. Painted straight onto the canvas rather than assembled from
+# flowables, because the page is full-bleed dark and flowables cannot paint
+# a page background.
+#
+# 🔴 Cert number: the live HTML template carries a PLACEHOLDER (#4812346).
+# The real certificate is #5275329, issued 2026-02-04, per sai-company-info.
+# Do not copy the number back from the template.
 
-    # Logo between title block and bottom of page
+COVER_CONTACT_LINES = [
+    "Adam Pierce  ·  FAA Part 107 Cert #5275329",
+    "info@faithandharmonyllc.com  ·  757.843.8772",
+    "Faith & Harmony LLC  ·  Chesapeake, Virginia",
+]
+COVER_LOCALE = "Hampton Roads, Virginia  ·  sentinelaerialinspections.com"
+COVER_BADGE = "Confidential Deliverable"
+EMDASH = "—"
+
+# Smallest type allowed anywhere on the cover. The first cut used 6.5pt for
+# cell labels and 7pt for the locale line, which is legal-fine-print size:
+# fine on a 27" monitor, marginal on paper, unreadable on a phone at
+# fit-width. 8pt is the floor for anything a client is expected to read.
+# Contrast is not the constraint here — every cover colour clears WCAG AA on
+# #0A0A0A and still clears it after grayscale conversion for a B&W printer.
+PT_MIN = 8.0
+
+
+def _fmt_cover_date(raw):
+    """ISO date to 'April 23, 2026'. Anything unparseable passes through."""
+    if not raw:
+        return EMDASH
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(str(raw)[:10], fmt).strftime("%B %d, %Y")
+        except ValueError:
+            continue
+    return str(raw)
+
+
+def _tracked_width(canvas_obj, text, font, size, tracking):
+    return canvas_obj.stringWidth(text, font, size) + tracking * max(
+        len(text) - 1, 0)
+
+
+def _spaced(canvas_obj, x, y, text, font, size, color, tracking=0.0,
+            centred_on=None):
+    """Letterspaced text. Canvas has no setCharSpace; it lives on the text
+    object, which is why this goes through beginText."""
+    if centred_on is not None:
+        x = centred_on - _tracked_width(
+            canvas_obj, text, font, size, tracking) / 2.0
+    t = canvas_obj.beginText(x, y)
+    t.setFont(font, size)
+    t.setFillColor(color)
+    if tracking:
+        t.setCharSpace(tracking)
+    t.textOut(text)
+    canvas_obj.drawText(t)
+
+
+def _wrap_to_width(canvas_obj, text, font, size, max_w):
+    canvas_obj.setFont(font, size)
+    words, lines, cur = str(text).split(), [], ""
+    for w in words:
+        trial = f"{cur} {w}".strip()
+        if canvas_obj.stringWidth(trial, font, size) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _draw_cover(canvas_obj, data, template):
+    PAGE_W, PAGE_H = letter
+    M = 0.75 * inch
+
+    canvas_obj.saveState()
+
+    # Page is left white. The gold rule spans the content width rather than
+    # bleeding to the sheet edge, so it survives a printer that cannot print
+    # to the edge.
+    rule_y = PAGE_H - M
+    canvas_obj.setFillColor(COVER_GOLD)
+    canvas_obj.rect(M, rule_y, PAGE_W - 2 * M, 3, stroke=0, fill=1)
+
+    # ── Brand lockup: crest at 0.75in beside the wordmark
+    logo_sz = 0.75 * inch
+    logo_top = rule_y - 22
+    text_x = M
     if LOGO_PATH and os.path.exists(LOGO_PATH):
         try:
-            logo = RLImage(LOGO_PATH, width=2.0 * inch, height=2.0 * inch,
-                           kind="proportional")
-            logo.hAlign = "CENTER"
-            elements.append(logo)
+            canvas_obj.drawImage(
+                LOGO_PATH, M, logo_top - logo_sz, width=logo_sz, height=logo_sz,
+                mask="auto", preserveAspectRatio=True, anchor="sw",
+            )
+            text_x = M + logo_sz + 14
         except Exception as e:
             logging.getLogger(__name__).warning(f"Failed to embed logo: {e}")
+    _spaced(canvas_obj, text_x, logo_top - 22, "SENTINEL AERIAL INSPECTIONS",
+            FONT_DISPLAY, 11, COVER_INK, 1.9)
+    _spaced(canvas_obj, text_x, logo_top - 37, COVER_LOCALE,
+            FONT_DISPLAY_REG, PT_MIN, COVER_MUTED, 1.0)
 
+    # ── Footer, anchored to the bottom so the hero can flow above it
+    y = M
+    canvas_obj.setFont(FONT_DISPLAY_REG, PT_MIN)
+    canvas_obj.setFillColor(COVER_MUTED)
+    for line in reversed(COVER_CONTACT_LINES):
+        canvas_obj.drawString(M, y, line)
+        y += 11.5
+    # Badge sizes to its text so raising PT_MIN cannot overflow it.
+    badge_txt = COVER_BADGE.upper()
+    badge_w = _tracked_width(canvas_obj, badge_txt, FONT_DISPLAY,
+                             PT_MIN, 1.5) + 24
+    badge_h = 20
+    bx, by = PAGE_W - M - badge_w, M
+    canvas_obj.setFillColor(COVER_BADGE_BG)
+    canvas_obj.setStrokeColor(COVER_GOLD_DIM)
+    canvas_obj.setLineWidth(0.6)
+    canvas_obj.roundRect(bx, by, badge_w, badge_h, 3, stroke=1, fill=1)
+    _spaced(canvas_obj, 0, by + 7, badge_txt, FONT_DISPLAY, PT_MIN,
+            COVER_GOLD, 1.5, centred_on=bx + badge_w / 2.0)
+
+    canvas_obj.setStrokeColor(COVER_RULE)
+    canvas_obj.setLineWidth(0.5)
+    hairline_y = M + 46
+    canvas_obj.line(M, hairline_y, PAGE_W - M, hairline_y)
+
+    # ── Hero block. Measured first, then centred in the band between the
+    # brand lockup and the footer rule, which is what `margin: auto 0` does
+    # in the HTML template. Anchoring it to the bottom instead leaves a dead
+    # band through the middle of the page.
+    title = data.get("site_name") or "Site"
+    max_w = PAGE_W - 2 * M - 90
+    size, leading, lines = 34, 37, None
+    for trial in (34, 28, 23, 19):
+        cand = _wrap_to_width(canvas_obj, title, FONT_DISPLAY, trial, max_w)
+        if len(cand) <= 3:
+            size, leading, lines = trial, int(trial * 1.09), cand
+            break
+    if lines is None:
+        size, leading = 19, 21
+        lines = _wrap_to_width(canvas_obj, title, FONT_DISPLAY, 19, max_w)[:3]
+
+    subtitle = data.get("client") or data.get("client_org") or ""
+    city = data.get("client_city") or ""
+    if subtitle and city:
+        subtitle = f"{subtitle}  ·  {city}"
+
+    cell_w, cell_h, gap = 176, 46, 12
+    KICKER_H, SUB_H, GRID_GAP = 22, (30 if subtitle else 8), 26
+    grid_h = cell_h * 2 + gap
+    block_h = (KICKER_H + size + (len(lines) - 1) * leading
+               + SUB_H + GRID_GAP + grid_h)
+
+    band_top = logo_top - logo_sz - 48
+    band_bottom = hairline_y + 34
+    cursor = (band_top + band_bottom) / 2.0 + block_h / 2.0
+
+    # Kicker
+    canvas_obj.setFillColor(COVER_GOLD)
+    canvas_obj.rect(M, cursor - 8, 24, 2, stroke=0, fill=1)
+    kicker = template.title
+    if data.get("visit_sequence"):
+        kicker = f"{kicker}  ·  {data['visit_sequence']}"
+    _spaced(canvas_obj, M + 34, cursor - 10, kicker.upper(),
+            FONT_DISPLAY, PT_MIN, COVER_GOLD, 2.2)
+    cursor -= KICKER_H
+
+    # Title — the property name, per spec. Report type is the kicker above.
+    canvas_obj.setFont(FONT_DISPLAY, size)
+    canvas_obj.setFillColor(COVER_INK)
+    for ln in lines:
+        cursor -= size
+        canvas_obj.drawString(M, cursor, ln)
+        cursor -= (leading - size)
+    cursor += (leading - size)
+
+    # Subtitle — client organisation · city
+    if subtitle:
+        cursor -= SUB_H
+        canvas_obj.setFont(FONT_DISPLAY_REG, 10.5)
+        canvas_obj.setFillColor(COVER_SUB)
+        canvas_obj.drawString(M, cursor, subtitle)
+    else:
+        cursor -= SUB_H
+
+    # ── Meta grid: Flight Date, Job Number, Site Address, Prepared For
+    cursor -= GRID_GAP
+    cells = [
+        ("Flight Date", _fmt_cover_date(data.get("date"))),
+        ("Job Number", data.get("job_number") or EMDASH),
+        ("Site Address", data.get("site_address") or EMDASH),
+        ("Prepared For", data.get("prepared_for") or EMDASH),
+    ]
+    row_y = [cursor - cell_h, cursor - cell_h * 2 - gap]
+    for i, (label, value) in enumerate(cells):
+        cx = M + (i % 2) * (cell_w + gap)
+        cy = row_y[i // 2]
+        canvas_obj.setFillColor(COVER_CELL_BG)
+        canvas_obj.setStrokeColor(COVER_RULE)
+        canvas_obj.setLineWidth(0.5)
+        canvas_obj.roundRect(cx, cy, cell_w, cell_h, 4, stroke=1, fill=1)
+        _spaced(canvas_obj, cx + 12, cy + cell_h - 17, label.upper(),
+                FONT_DISPLAY, PT_MIN, COVER_GOLD, 1.4)
+        val_lines = _wrap_to_width(canvas_obj, value, FONT_DISPLAY_REG, 9.5,
+                                   cell_w - 24)[:2]
+        vy = cy + cell_h - 31
+        canvas_obj.setFont(FONT_DISPLAY_REG, 9.5)
+        canvas_obj.setFillColor(COVER_INK)
+        for ln in val_lines:
+            canvas_obj.drawString(cx + 12, vy, ln)
+            vy -= 11
+
+    canvas_obj.restoreState()
+
+
+def _make_cover_painter(data, template):
+    """onFirstPage handler. Closure carries the job data onto the canvas."""
+    def paint(canvas_obj, doc):
+        try:
+            _draw_cover(canvas_obj, data, template)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Cover render failed: {e}")
+    return paint
+
+
+def _render_cover(elements, styles, data, template):
+    """Cover is painted by the onFirstPage handler, so the story only has to
+    leave page one empty and move on."""
+    elements.append(Spacer(1, 1))
     elements.append(PageBreak())
 
 
@@ -198,30 +474,6 @@ def _render_executive_summary(elements, styles, section, ai_data):
     elements.append(Spacer(1, 12))
 
 
-def _resolution_row(data):
-    """Ranked resolution row: delivered raster > predicted > "Not measured".
-
-    A predicted number must never occupy this row when a delivered raster
-    exists. Predicted GSD is measured against barometric height above the
-    takeoff point; the delivered raster's pixel size is a property of the
-    thing the client actually received, and the two were observed to differ
-    by 14% over mature canopy.
-    """
-    achieved = data.get("gsd_achieved")
-    predicted = data.get("gsd_predicted")
-    if achieved and achieved.get("gsd_cm"):
-        return ["Orthomosaic Resolution",
-                f"{achieved['gsd_cm']:.2f} cm/pixel "
-                f"(measured from the delivered GeoTIFF)"]
-    if predicted and predicted.get("sufficient"):
-        return ["Predicted Ground Sample Distance",
-                f"{predicted['median_cm']:.2f} cm/pixel median "
-                f"(p95 {predicted['p95_cm']:.2f}, "
-                f"±{predicted['uncertainty_pct']:.0f}%) — predicted "
-                f"from flight metadata, not measured on a delivered raster"]
-    return ["Ground Sample Distance", "Not measured"]
-
-
 def _render_flight_summary(elements, styles, data):
     elements.append(Paragraph("Flight Summary", styles["SectionHeader"]))
     rows = [
@@ -243,7 +495,6 @@ def _render_flight_summary(elements, styles, data):
         rows.append(["Panorama Sets", str(len(data.get("panorama_sets", [])))])
         rows.append(["Skipped Straggler Photos",
                      str(data.get("panorama_stragglers", 0))])
-    rows.append(_resolution_row(data))
 
     table = Table(rows, colWidths=[2 * inch, 4.5 * inch])
     table.setStyle(TableStyle([
@@ -286,35 +537,6 @@ def _render_deliverables(elements, styles, data):
     elements.append(Spacer(1, 12))
 
 
-def _resolution_basis_sentence(data):
-    """Name the basis behind the resolution row, or say nothing at all.
-
-    Deliberately never uses accuracy language: this is an optical sampling
-    distance, not a positional accuracy figure, and stating it as the latter
-    would be exactly the unverified claim the measurement exists to remove.
-    """
-    achieved = data.get("gsd_achieved")
-    predicted = data.get("gsd_predicted")
-    if achieved and achieved.get("gsd_cm"):
-        base = ("Orthomosaic resolution was measured from the delivered "
-                "GeoTIFF's own geotransform.")
-    elif predicted and predicted.get("sufficient"):
-        base = ("Ground sample distance was computed per photo from the "
-                "recorded barometric altitude above the takeoff point and the "
-                "camera's own focal length and frame size, then reduced over "
-                f"{predicted['measured']} nadir photos. It is predicted from "
-                "flight metadata rather than measured on a delivered raster.")
-        if predicted.get("resolution_tier") in ("T4_overview", "T5_reconnaissance"):
-            base += (" At this sampling distance the imagery is a visual "
-                     "product and not a measurement product.")
-    else:
-        return None
-    return base + (
-        " This is an optical sampling distance and not a positional accuracy "
-        "figure; it does not support survey-grade or accuracy-checkpoint "
-        "claims, which require ground control.")
-
-
 def _render_methodology(elements, styles, data, has_ai):
     elements.append(Paragraph("Methodology", styles["SectionHeader"]))
     engine = data.get("engine", "nodeodm")
@@ -351,9 +573,6 @@ def _render_methodology(elements, styles, data, has_ai):
         f"by gimbal pitch angle (nadir: straight down; oblique: angled). {proc}",
         styles["SentinelBody"],
     ))
-    resolution_basis = _resolution_basis_sentence(data)
-    if resolution_basis:
-        elements.append(Paragraph(resolution_basis, styles["SmallGrey"]))
     if has_ai:
         elements.append(Paragraph(
             "Site observations were generated using AI-assisted photo analysis "
@@ -873,6 +1092,25 @@ def generate_report(report_type, data, output_dir):
         data: Dict with site metadata, photos, ai_analysis, images
         output_dir: Directory to write the PDF
 
+    Cover keys (report-system-spec-v1.md "Cover identity block"). Every one
+    is optional here and degrades to an em dash, but a client-facing report
+    should carry all of them:
+
+        site_name       Property name. Rendered as the cover TITLE.
+        date            ISO flight date. Formatted to "April 23, 2026".
+        job_number      SAI-YYYY-NNN, sequential per year, one series across
+                        every service line.
+        site_address    Street address of the site.
+        prepared_for    Named recipient, e.g. "Marcus T. Williams, PM".
+        client          Client organisation. Rendered as the subtitle.
+        client_city     Appended to the subtitle after a middle dot.
+        visit_sequence  Optional, e.g. "Visit 04 of 12". Appended to the
+                        kicker, which is otherwise just the report type.
+
+    ⚠️ The four spec-mandated fields job_number, site_address, prepared_for
+    and client are not yet populated by the Sortie caller. Until they are,
+    covers ship with em dashes in the meta grid.
+
     Returns:
         Dict with "pdf_path" key on success, or None on failure.
     """
@@ -920,7 +1158,11 @@ def generate_report(report_type, data, output_dir):
             topMargin=0.75 * inch,
             bottomMargin=0.75 * inch,
         )
-        doc.build(elements, onFirstPage=_footer, onLaterPages=_footer)
+        doc.build(
+            elements,
+            onFirstPage=_make_cover_painter(data, template),
+            onLaterPages=_footer,
+        )
 
         log.info(f"Report saved: {pdf_path}")
         return {"pdf_path": pdf_path}
