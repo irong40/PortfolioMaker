@@ -12,3 +12,9 @@ test-footage/
 # local runtime settings (may hold OAuth client secret — never commit)
 sortie_settings.json
 rtklib/rnx2rtkp.exe
+
+# Session and CLI scratch (regenerated per session — not shared state)
+.claude/project-state.json
+.claude/session-handoff.md
+.planning/agent-history.json
+supabase/.temp/
